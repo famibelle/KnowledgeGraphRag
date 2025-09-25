@@ -917,6 +917,53 @@ async def get_graph_visualization_data(
         logger.error(f"Error getting graph visualization data: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to get graph data: {str(e)}")
 
+@app.delete("/document/{filename}")
+def delete_document(filename: str):
+    """Supprime un document et tous ses chunks associés"""
+    try:
+        # Requête pour supprimer le document et ses chunks
+        delete_query = """
+        MATCH (d:Document {filename: $filename})
+        OPTIONAL MATCH (d)-[:CONTAINS_CHUNK]->(c:Chunk)
+        OPTIONAL MATCH (c)-[r]-()
+        WITH d, collect(DISTINCT c) as chunks, collect(DISTINCT r) as relations
+        
+        // Supprimer d'abord les relations des chunks
+        FOREACH(rel in relations | DELETE rel)
+        
+        // Supprimer les chunks
+        FOREACH(chunk in chunks | DELETE chunk)
+        
+        // Supprimer le document
+        DELETE d
+        
+        RETURN count(chunks) as deleted_chunks, count(relations) as deleted_relations
+        """
+        
+        result = kg.query(delete_query, params={"filename": filename})
+        
+        if result:
+            deleted_chunks = result[0].get('deleted_chunks', 0)
+            deleted_relations = result[0].get('deleted_relations', 0)
+            
+            return {
+                "success": True,
+                "message": f"Document '{filename}' supprimé avec succès",
+                "deleted_chunks": deleted_chunks,
+                "deleted_relations": deleted_relations,
+                "filename": filename
+            }
+        else:
+            return {
+                "success": False,
+                "message": f"Document '{filename}' non trouvé",
+                "filename": filename
+            }
+            
+    except Exception as e:
+        logger.error(f"Erreur lors de la suppression du document {filename}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erreur lors de la suppression: {str(e)}")
+
 @app.get("/")
 def root():
     return {"message": "KnowledgeGraphRag API is running"}
