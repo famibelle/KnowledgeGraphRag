@@ -22,15 +22,19 @@ WORKDIR /app
 
 # Copier les fichiers de requirements en premier (cache Docker)
 COPY requirements.txt .
-COPY KnowledgeGraphRagAPI/requirements.txt ./KnowledgeGraphRagAPI/
+COPY KnowledgeGraphRagAPI/requirements.txt ./requirements-api.txt
 
 # Installation des dépendances Python
 RUN pip install --no-cache-dir --upgrade pip
 RUN pip install --no-cache-dir -r requirements.txt
-RUN pip install --no-cache-dir -r KnowledgeGraphRagAPI/requirements.txt
+RUN pip install --no-cache-dir -r requirements-api.txt
 
 # Copier le code de l'application
 COPY . .
+
+# Script de démarrage (faire avant changement d'utilisateur)
+COPY docker-start.sh /app/
+RUN chmod +x /app/docker-start.sh
 
 # Créer un utilisateur non-root pour la sécurité
 RUN useradd -m -s /bin/bash graphrag
@@ -39,10 +43,6 @@ USER graphrag
 
 # Exposer les ports
 EXPOSE 8000 8501
-
-# Script de démarrage
-COPY docker-start.sh /app/
-RUN chmod +x /app/docker-start.sh
 
 # Healthcheck
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
