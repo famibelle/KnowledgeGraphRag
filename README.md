@@ -119,7 +119,7 @@ graph TD
     D1[📄 Document<br/>filename: string<br/>created_at: datetime<br/>file_extension: string<br/>chunk_count: integer]
     D2[📄 Document<br/>autre_doc.pdf]
     
-    C1[📝 Chunk<br/>text: string<br/>textEmbedding: vector[1536]<br/>chunkIndex: integer<br/>filename: string<br/>created_at: datetime]
+    C1[📝 Chunk<br/>text: string<br/>textEmbedding: vector 1536D<br/>chunkIndex: integer<br/>filename: string<br/>created_at: datetime]
     C2[📝 Chunk<br/>chunk_suivant]
     C3[📝 Chunk<br/>chunk_précédent]
     C4[📝 Chunk<br/>chunk_similaire]
