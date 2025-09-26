@@ -114,51 +114,48 @@ flowchart TB
 ### **Modèle de Données Neo4j**
 
 ```mermaid
-graph TD
-    %% Nodes
-    D1[📄 Document<br/>filename: string<br/>created_at: datetime<br/>file_extension: string<br/>chunk_count: integer]
-    D2[📄 Document<br/>autre_doc.pdf]
+graph LR
+    %% Entités principales
+    D1[📄 Document A]
+    D2[📄 Document B]
     
-    C1[📝 Chunk<br/>text: string<br/>textEmbedding: vector 1536D<br/>chunkIndex: integer<br/>filename: string<br/>created_at: datetime]
-    C2[📝 Chunk<br/>chunk_suivant]
-    C3[📝 Chunk<br/>chunk_précédent]
-    C4[📝 Chunk<br/>chunk_similaire]
-    C5[📝 Chunk<br/>autre_doc_chunk]
+    C1[📝 Chunk 1]
+    C2[📝 Chunk 2]
+    C3[📝 Chunk 3]
+    C4[📝 Chunk 4]
     
-    %% Relations hiérarchiques
-    D1 -.->|CONTAINS_CHUNK| C1
-    D1 -.->|CONTAINS_CHUNK| C2
-    D1 -.->|CONTAINS_CHUNK| C3
-    D2 -.->|CONTAINS_CHUNK| C5
+    %% Relations document → chunks
+    D1 --> C1
+    D1 --> C2
+    D2 --> C3
+    D2 --> C4
     
-    %% Relations séquentielles (navigation dans le document)
-    C3 -->|NEXT_CHUNK| C1
-    C1 -->|NEXT_CHUNK| C2
-    C1 -->|PREVIOUS_CHUNK| C3
-    C2 -->|PREVIOUS_CHUNK| C1
+    %% Navigation séquentielle
+    C1 -.-> C2
     
-    %% Relations sémantiques (inter et intra-documents)
-    C1 -.->|RELATES_TO<br/>similarity: 0.87| C4
-    C1 -.->|RELATES_TO<br/>similarity: 0.82| C5
-    C4 -.->|RELATES_TO<br/>similarity: 0.85| C2
+    %% Relations sémantiques inter-documents
+    C1 -.-> C3
+    C2 -.-> C4
     
     %% Styling
-    classDef documentNode fill:#e1f5fe,stroke:#01579b,stroke-width:2px
-    classDef chunkNode fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
-    classDef sequentialRel stroke:#2e7d32,stroke-width:3px
-    classDef semanticRel stroke:#d84315,stroke-width:2px,stroke-dasharray: 5 5
-    classDef hierarchicalRel stroke:#424242,stroke-width:2px,stroke-dasharray: 10 5
+    classDef doc fill:#e1f5fe,stroke:#1976d2,stroke-width:2px
+    classDef chunk fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
     
-    class D1,D2 documentNode
-    class C1,C2,C3,C4,C5 chunkNode
+    class D1,D2 doc
+    class C1,C2,C3,C4 chunk
 ```
 
-**Légende du Modèle :**
-- 📄 **Document** : Fichier source ingéré (PDF, MD, DOCX, TXT)
-- 📝 **Chunk** : Fragment de texte avec embedding vectoriel (1536D)
-- **CONTAINS_CHUNK** : Relation hiérarchique document → chunks
-- **NEXT_CHUNK / PREVIOUS_CHUNK** : Navigation séquentielle dans le document
-- **RELATES_TO** : Relations sémantiques inter/intra-documents (similarity > 0.8)
+**Structure GraphRAG :**
+```cypher
+(:Document) -[CONTAINS_CHUNK]-> (:Chunk)
+(:Chunk) -[NEXT_CHUNK]-> (:Chunk)  
+(:Chunk) -[RELATES_TO]-> (:Chunk)
+```
+
+**Types de Relations :**
+- **Ligne pleine** : CONTAINS_CHUNK (hiérarchique)
+- **Ligne pointillée** : NEXT_CHUNK (séquentielle) 
+- **Ligne pointillée courbe** : RELATES_TO (sémantique inter-documents)
 
 ### **🔍 Requêtes Cypher d'Exploration**
 
