@@ -35,6 +35,56 @@
 - **Filtrage intelligent** pour éviter les hallucinations
 - **Recherche multi-documents** pour des requêtes complexes
 
+## 🐳 Déploiement Docker (Recommandé)
+
+### **Démarrage Ultra-Rapide**
+
+```bash
+# 1. Télécharger la configuration
+curl -o .env.docker https://raw.githubusercontent.com/famibelle/KnowledgeGraphRag/master/.env.docker
+
+# 2. Éditer avec vos clés API
+nano .env.docker  # ou notepad .env.docker sur Windows
+
+# 3. Démarrer avec l'image publiée
+docker run -d \
+  --name graphrag-demo \
+  -p 8000:8000 \
+  -p 8501:8501 \
+  --env-file .env.docker \
+  famibelle/graphrag-knowledge-graph:latest
+```
+
+**🎉 C'est tout ! Ouvrez http://localhost:8501**
+
+### **Images Docker Disponibles**
+
+| Registry | Image | Commande |
+|----------|--------|----------|
+| 🐳 **Docker Hub** | `famibelle/graphrag-knowledge-graph` | `docker pull famibelle/graphrag-knowledge-graph:latest` |
+| 📦 **GitHub** | `ghcr.io/famibelle/knowledgegraphrag` | `docker pull ghcr.io/famibelle/knowledgegraphrag:latest` |
+
+### **Options de Déploiement**
+
+#### **Option 1: Docker Run (Simple)**
+```bash
+docker run -d -p 8000:8000 -p 8501:8501 --env-file .env.docker famibelle/graphrag-knowledge-graph:latest
+```
+
+#### **Option 2: Docker Compose (Recommandé)**
+```bash
+# Avec image publiée
+curl -o docker-compose.production.yml https://raw.githubusercontent.com/famibelle/KnowledgeGraphRag/master/docker-compose.production.yml
+docker-compose -f docker-compose.production.yml up -d
+```
+
+#### **Option 3: Build Local**
+```bash
+git clone https://github.com/famibelle/KnowledgeGraphRag.git
+cd KnowledgeGraphRag
+make run
+```
+
 ## 🏗️ Architecture Technique
 
 ### **Stack Technologique**
@@ -440,26 +490,7 @@ CREATE (c1)-[:RELATES_TO {score: similarity}]->(c2)
 - **Filtrage multi-niveaux** : Score + pertinence sémantique
 - **Prévention des hallucinations** : Pas de réponse sans contexte valide
 
-## 🔧 Configuration Avancée
 
-### **Paramètres de Performance**
-```python
-# Dans main.py - Ajustement des seuils
-similarity_threshold: float = Field(
-    default=0.9,
-    ge=0.1, le=1.0,
-    description="Seuil de similarité (0.9=très pertinent, 0.7=recherche large)"
-)
-```
-
-### **Optimisation Neo4j**
-```cypher
--- Index vectoriel (créé automatiquement)
-CREATE VECTOR INDEX GrahRAG FOR (c:Chunk) ON (c.textEmbedding)
-OPTIONS {indexConfig: {
-  `vector.dimensions`: 1536,
-  `vector.similarity_function`: 'cosine'
-}}
 ```
 
 ## 🧪 Tests et Validation

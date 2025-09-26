@@ -80,7 +80,27 @@ except:
     print('❌ API not responding')
 "
 
-##@ 📋 Instructions
+##@ � Publication Docker
+
+publish-hub: ## Publier sur Docker Hub uniquement
+	@echo "📤 Publishing to Docker Hub..."
+	@./publish-docker.ps1 -Registry hub
+
+publish-github: ## Publier sur GitHub Container Registry uniquement
+	@echo "📦 Publishing to GitHub Container Registry..."
+	@./publish-docker.ps1 -Registry github
+
+publish: ## Publier sur Docker Hub ET GitHub Container Registry
+	@echo "🚀 Publishing to both registries..."
+	@./publish-docker.ps1 -Registry both
+
+tag-release: ## Créer un tag de release (ex: make tag-release VERSION=v1.0.0)
+	@echo "🏷️ Creating release tag $(VERSION)..."
+	@git tag $(VERSION)
+	@git push origin $(VERSION)
+	@echo "✅ Release tag $(VERSION) created and pushed"
+
+##@ �📋 Instructions
 
 setup: ## Instructions de configuration initiale
 	@echo "📋 GraphRAG Setup Instructions"
@@ -98,3 +118,17 @@ setup: ## Instructions de configuration initiale
 	@echo "   http://localhost:8501"
 	@echo ""
 	@echo "4. 📚 Upload documents and start querying!"
+
+quick-start: ## Démarrage rapide avec image publiée
+	@echo "🚀 GraphRAG Quick Start with Published Image"
+	@echo "==========================================="
+	@echo ""
+	@echo "1. 📥 Download config template:"
+	@echo "   curl -o .env.docker https://raw.githubusercontent.com/famibelle/KnowledgeGraphRag/master/.env.docker"
+	@echo ""
+	@echo "2. 🔐 Edit .env.docker with your API keys"
+	@echo ""
+	@echo "3. 🚀 Run with published image:"
+	@echo "   docker run -d -p 8000:8000 -p 8501:8501 --env-file .env.docker famibelle/graphrag-knowledge-graph:latest"
+	@echo ""
+	@echo "4. 🌐 Open: http://localhost:8501"

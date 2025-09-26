@@ -1,0 +1,67 @@
+# 🐳 GraphRAG Knowledge Graph - Production Docker Compose
+# Utilise les images publiées sur Docker Hub / GitHub Container Registry
+
+version: '3.8'
+
+services:
+  graphrag:
+    # Option 1: Image Docker Hub (recommandé pour la plupart des utilisateurs)
+    image: famibelle/graphrag-knowledge-graph:latest
+    
+    # Option 2: Image GitHub Container Registry (décommenter pour utiliser)
+    # image: ghcr.io/famibelle/knowledgegraphrag:latest
+    
+    container_name: graphrag-production
+    ports:
+      - "8000:8000"  # FastAPI
+      - "8501:8501"  # Streamlit
+    
+    environment:
+      # ⚠️ IMPORTANT: Configurez ces variables dans .env.docker
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - NEO4J_URI=${NEO4J_URI}
+      - NEO4J_USERNAME=${NEO4J_USERNAME:-neo4j}
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD}
+      - NEO4J_DATABASE=${NEO4J_DATABASE:-neo4j}
+      
+      # Configuration optionnelle
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - DEFAULT_SIMILARITY_THRESHOLD=${DEFAULT_SIMILARITY_THRESHOLD:-0.9}
+      - DEFAULT_TOP_K=${DEFAULT_TOP_K:-5}
+    
+    env_file:
+      - .env.docker
+    
+    volumes:
+      # Optionnel : Persister les logs
+      - ./logs:/app/logs
+    
+    restart: unless-stopped
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    
+    networks:
+      - graphrag-network
+
+networks:
+  graphrag-network:
+    driver: bridge
+
+# 📋 Instructions d'utilisation:
+# 
+# 1. Télécharger le fichier de configuration:
+#    curl -o .env.docker https://raw.githubusercontent.com/famibelle/KnowledgeGraphRag/master/.env.docker
+#
+# 2. Éditer .env.docker avec vos vraies clés API
+#
+# 3. Démarrer:
+#    docker-compose -f docker-compose.production.yml up -d
+#
+# 4. Accéder:
+#    - Interface: http://localhost:8501
+#    - API Docs: http://localhost:8000/docs
