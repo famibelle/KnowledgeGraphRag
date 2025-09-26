@@ -485,13 +485,6 @@ WHERE c1.filename <> c2.filename
 CREATE (c1)-[:RELATES_TO {score: similarity}]->(c2)
 ```
 
-### **4. Stratégies de Filtrage Avancées**
-- **Seuil dynamique** : Adaptation selon le contexte
-- **Filtrage multi-niveaux** : Score + pertinence sémantique
-- **Prévention des hallucinations** : Pas de réponse sans contexte valide
-
-
-```
 
 ## 🧪 Tests et Validation
 
@@ -532,13 +525,6 @@ python test_parallel_efficiency.py  # Performance parallèle
 └── README.md               # Cette documentation
 ```
 
-### **Développement Local**
-1. Fork le repository
-2. Créer une branche feature : `git checkout -b feature/amazing-feature`
-3. Tester localement avec Neo4j + OpenAI
-4. Commit : `git commit -m 'Add amazing feature'`
-5. Push : `git push origin feature/amazing-feature`
-6. Ouvrir une Pull Request
 
 ## 🐛 Dépannage
 
@@ -548,23 +534,6 @@ python test_parallel_efficiency.py  # Performance parallèle
 - **Import errors** : `pip install -r requirements.txt`
 - **Performance lente** : Vérifier l'index vectoriel Neo4j
 
-### **Logs et Debug**
-```bash
-# Activer les logs détaillés
-export LOG_LEVEL=DEBUG
-python -m uvicorn main:app --log-level debug
-```
-
-## 📝 License
-
-MIT License - Voir [LICENSE](LICENSE) pour les détails.
-
-## 🙏 Remerciements
-
-- **Neo4j** pour la technologie graphe + vectorielle
-- **OpenAI** pour les embeddings et LLM
-- **FastAPI** & **Streamlit** pour les frameworks
-- **LangChain** pour l'intégration élégante
 
 ---
 
