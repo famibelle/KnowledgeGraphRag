@@ -29,9 +29,6 @@ logs/
 *.pdf
 *.docx
 *.doc
-*.txt
-!README*.txt
-!requirements*.txt
 
 # Cache et temporaires
 __pycache__/
@@ -74,3 +71,7 @@ node_modules/
 # OS
 .DS_Store
 Thumbs.db
+
+# Include requirements files
+!requirements.txt
+!requirements*.txt
