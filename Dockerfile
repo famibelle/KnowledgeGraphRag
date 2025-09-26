@@ -20,16 +20,14 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copier les fichiers de requirements en premier (cache Docker)
+# Copier le fichier requirements depuis la racine
 COPY requirements.txt .
-COPY KnowledgeGraphRagAPI/requirements.txt ./requirements-api.txt
 
 # Installation des dépendances Python
 RUN pip install --no-cache-dir --upgrade pip
 RUN pip install --no-cache-dir -r requirements.txt
-RUN pip install --no-cache-dir -r requirements-api.txt
 
-# Créer un utilisateur non-root pour la sécurité
+# Créer un utilisateur non-root
 RUN groupadd -r graphrag && useradd -r -g graphrag graphrag
 
 # Copier le code de l'application
@@ -38,19 +36,19 @@ COPY streamlit_rag_simple.py .
 COPY streamlit_kg_interface.py .
 COPY docker-start.sh .
 
-# Script de démarrage (faire avant changement d'utilisateur)
+# Définir les permissions
 RUN chmod +x docker-start.sh && \
     chown -R graphrag:graphrag /app
 
-# Changer d'utilisateur
+# Passer à l'utilisateur non-root
 USER graphrag
 
 # Exposer les ports
 EXPOSE 8000 8501
 
-# Healthcheck
+# Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# Point d'entrée
+# Démarrer l'application
 CMD ["./docker-start.sh"]
