@@ -1,6 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional
 import os
 import asyncio
@@ -19,7 +19,99 @@ import time
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="KnowledgeGraphRag API")
+app = FastAPI(
+    title="KnowledgeGraphRag API",
+    description="""
+    ## API de Graphe de Connaissances avec RAG (Retrieval Augmented Generation)
+    
+    Cette API combine Neo4j et OpenAI pour créer un système intelligent de questions-réponses
+    basé sur vos documents. Elle offre des capacités avancées de recherche sémantique 
+    et de génération de réponses contextualisées.
+    
+    ### Fonctionnalités principales
+    
+    🔍 **Recherche sémantique avancée**
+    - Embeddings vectoriels via OpenAI (text-embedding-3-small)
+    - Recherche par similarité cosinus avec seuils configurables
+    - Support multilingue optimisé pour le français
+    
+    📚 **Ingestion intelligente de documents**
+    - Support PDF, Markdown, Word, Texte
+    - Découpage automatique en chunks optimisés
+    - Création automatique du graphe de connaissances
+    
+    🧠 **Génération de réponses LLM** 
+    - Integration ChatGPT-3.5-turbo
+    - Réponses contextualisées basées sur les documents
+    - Filtrage intelligent pour éviter les hallucinations
+    
+    🕸️ **Graphe de connaissances Neo4j**
+    - Relations automatiques entre chunks similaires
+    - Navigation séquentielle dans les documents
+    - Requêtes Cypher flexibles pour l'exploration
+    
+    ### Architecture technique
+    
+    - **Base de données**: Neo4j (graphe vectoriel)
+    - **Embeddings**: OpenAI text-embedding-3-small (1536 dimensions)
+    - **LLM**: OpenAI GPT-3.5-turbo
+    - **Backend**: FastAPI (Python async)
+    - **Recherche**: Similarité cosinus avec index vectoriel
+    
+    ### Configuration requise
+    
+    - Neo4j 5.x avec support vectoriel
+    - Clé API OpenAI valide
+    - Variables d'environnement configurées (.env)
+    """,
+    version="1.2.0",
+    contact={
+        "name": "Support KnowledgeGraphRag",
+        "url": "https://github.com/famibelle/KnowledgeGraphRag",
+    },
+    license_info={
+        "name": "MIT License",
+        "url": "https://opensource.org/licenses/MIT",
+    },
+    tags_metadata=[
+        {
+            "name": "Query",
+            "description": "Endpoints de recherche sémantique et génération de réponses LLM"
+        },
+        {
+            "name": "RAG", 
+            "description": "Retrieval Augmented Generation - Recherche augmentée par génération"
+        },
+        {
+            "name": "LLM",
+            "description": "Large Language Model integration (OpenAI GPT)"
+        },
+        {
+            "name": "Ingestion",
+            "description": "Upload et traitement de documents"
+        },
+        {
+            "name": "Documents", 
+            "description": "Gestion des documents dans le graphe"
+        },
+        {
+            "name": "Knowledge Graph",
+            "description": "Operations sur le graphe de connaissances Neo4j"
+        },
+        {
+            "name": "Neo4j",
+            "description": "Requêtes directes sur la base de données graphe"
+        },
+        {
+            "name": "Cypher",
+            "description": "Langage de requête Neo4j pour exploration avancée"
+        },
+        {
+            "name": "Database",
+            "description": "Opérations de base de données et statistiques"
+        }
+    ]
+)
 
 # Gestionnaire d'erreur global
 @app.exception_handler(Exception)
@@ -60,9 +152,35 @@ except Exception as e:
 embeddings_service = OpenAIEmbeddings(model="text-embedding-3-small")
 
 class QueryRequest(BaseModel):
-    question: str
-    top_k: int = 5
-    similarity_threshold: float = 0.9  # Seuil minimum de similarité
+    """
+    Modèle de requête pour la recherche sémantique avec LLM
+    
+    Attributes:
+        question: Question en langage naturel (français recommandé)
+        top_k: Nombre maximum de chunks à retourner (défaut: 5, max recommandé: 10)
+        similarity_threshold: Seuil minimum de similarité cosinus (défaut: 0.9)
+                             - 0.9-1.0: Très pertinent uniquement
+                             - 0.8-0.9: Pertinent avec tolérance
+                             - 0.7-0.8: Recherche large
+                             - <0.7: Peut inclure du bruit
+    """
+    question: str = Field(
+        ..., 
+        description="Question en langage naturel sur le contenu des documents",
+        example="Comment fonctionne le mécanisme d'attention dans les transformers ?"
+    )
+    top_k: int = Field(
+        default=5, 
+        ge=1, 
+        le=20,
+        description="Nombre maximum de chunks pertinents à retourner"
+    )
+    similarity_threshold: float = Field(
+        default=0.9,
+        ge=0.1,
+        le=1.0, 
+        description="Seuil minimum de similarité cosinus (0.9 = très strict, 0.7 = plus permissif)"
+    )
 
 class IngestRequest(BaseModel):
     filename: str
@@ -91,9 +209,56 @@ class CypherRequest(BaseModel):
     params: Optional[dict] = None
 
 
-@app.post("/query")
+@app.post("/query", 
+          summary="Recherche sémantique avec génération de réponse LLM",
+          description="Effectue une recherche sémantique vectorielle dans la base Neo4j et génère une réponse intelligente via ChatGPT",
+          response_description="Résultats de recherche avec réponse LLM générée",
+          tags=["Query", "RAG", "LLM"])
 async def query_chunks(request: QueryRequest):
-    """Recherche sémantique dans Neo4j et génération de réponse LLM (async)"""
+    """
+    Recherche sémantique dans Neo4j avec génération de réponse LLM
+    
+    Cette endpoint combine recherche vectorielle et génération de langage naturel pour fournir
+    des réponses contextualisées basées sur le contenu des documents ingérés.
+    
+    **Fonctionnalités:**
+    - Recherche vectorielle avec embedding OpenAI (text-embedding-3-small)
+    - Filtrage par seuil de similarité pour éviter les résultats non pertinents
+    - Génération de réponse contextuelle via ChatGPT-3.5-turbo
+    - Support multilingue (optimisé pour le français)
+    
+    **Paramètres:**
+    - **question**: La question en langage naturel
+    - **top_k**: Nombre maximum de chunks à retourner (1-10)
+    - **similarity_threshold**: Seuil minimum de similarité cosinus (0.1-1.0)
+    
+    **Réponse:**
+    - **results**: Liste des chunks trouvés avec scores de similarité
+    - **llm_answer**: Réponse générée par l'IA basée sur le contexte
+    - **similarity_threshold_used**: Seuil effectivement utilisé
+    - **total_relevant_chunks**: Nombre de chunks pertinents trouvés
+    
+    **Codes d'erreur:**
+    - 400: Paramètres invalides
+    - 500: Erreur Neo4j ou OpenAI
+    
+    **Exemples d'usage:**
+    ```python
+    # Requête standard
+    {
+        "question": "Comment fonctionne l'attention dans les transformers ?",
+        "top_k": 5,
+        "similarity_threshold": 0.9
+    }
+    
+    # Recherche large
+    {
+        "question": "Quels sont les avantages de cette technologie ?",
+        "top_k": 3,
+        "similarity_threshold": 0.7
+    }
+    ```
+    """
     loop = asyncio.get_event_loop()
     
     # Vérification des index en async
@@ -171,9 +336,57 @@ async def query_chunks(request: QueryRequest):
         "total_relevant_chunks": len(results)
     }
 
-@app.post("/ingest_file")
+@app.post("/ingest_file",
+          summary="Ingestion de document dans le graphe de connaissances",
+          description="Traite et ingère un fichier dans Neo4j avec création automatique d'embeddings et relations",
+          response_description="Statut de l'ingestion avec statistiques de création",
+          tags=["Ingestion", "Documents", "Knowledge Graph"])
 async def ingest_file(file: UploadFile = File(...)):
-    """Ingestion d'un fichier (pdf, md, txt, docx) en chunks dans Neo4j avec structure de graphe (async)"""
+    """
+    Ingestion complète d'un fichier dans le graphe de connaissances
+    
+    Traite automatiquement un fichier uploadé et créé:
+    - Nœuds Document et Chunk dans Neo4j
+    - Embeddings vectoriels via OpenAI
+    - Relations séquentielles entre chunks (NEXT_CHUNK, PREVIOUS_CHUNK)
+    - Relations document-chunk (CONTAINS_CHUNK)
+    
+    **Formats supportés:**
+    - PDF (.pdf)
+    - Markdown (.md, .markdown) 
+    - Texte (.txt)
+    - Word (.docx)
+    
+    **Traitement automatique:**
+    1. Chargement et parsing du document
+    2. Découpage intelligent en chunks (800 caractères, overlap 80)
+    3. Génération d'embeddings OpenAI (text-embedding-3-small)
+    4. Création de la structure graphe dans Neo4j
+    5. Relations séquentielles pour navigation
+    
+    **Réponse:**
+    - **status**: "success" si réussi
+    - **chunks_created**: Nombre de chunks créés
+    - **filename**: Nom du fichier traité
+    - **document_created**: Confirmation de création du document
+    - **sequential_relations_created**: Nombre de relations séquentielles
+    
+    **Limitations:**
+    - Taille max: dépend de la configuration serveur
+    - Timeout: 300 secondes pour les gros fichiers
+    - Formats non supportés retournent une erreur 400
+    
+    **Exemple de réponse:**
+    ```json
+    {
+        "status": "success",
+        "chunks_created": 45,
+        "filename": "document.pdf",
+        "document_created": true,
+        "sequential_relations_created": 44
+    }
+    ```
+    """
     try:
         if kg is None:
             raise HTTPException(status_code=500, detail="Neo4j connection not available")
@@ -1224,9 +1437,58 @@ async def get_db_info():
         logger.error(f"Error getting database info: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to get database info: {str(e)}")
 
-@app.post("/cypher")
+@app.post("/cypher",
+          summary="Exécution de requêtes Cypher personnalisées",
+          description="Interface pour exécuter des requêtes Cypher directes sur Neo4j",
+          response_description="Résultats de la requête Cypher",
+          tags=["Neo4j", "Cypher", "Database"])
 def run_cypher(request: CypherRequest = None):
-    """Exécute une requête Cypher arbitraire sur Neo4j. Par défaut, retourne la topologie de la base."""
+    """
+    Exécute une requête Cypher personnalisée sur la base Neo4j
+    
+    Interface flexible pour l'exploration et manipulation directe de la base de données.
+    Utile pour le debug, l'analyse des données et les opérations avancées.
+    
+    **Fonctionnalités:**
+    - Exécution de requêtes Cypher arbitraires
+    - Support des paramètres de requête
+    - Requête par défaut si aucune fournie (topologie DB)
+    - Gestion d'erreurs avec détails
+    
+    **Paramètres:**
+    - **query**: Requête Cypher à exécuter (optionnel)
+    - **params**: Dictionnaire de paramètres pour la requête (optionnel)
+    
+    **Exemples de requêtes utiles:**
+    ```cypher
+    // Statistiques générales
+    MATCH (n) RETURN labels(n)[0] as Type, count(n) as Count
+    
+    // Documents et leurs chunks
+    MATCH (d:Document)-[:CONTAINS_CHUNK]->(c:Chunk) 
+    RETURN d.filename, count(c) as chunks
+    
+    // Relations de similarité
+    MATCH (c1:Chunk)-[r:RELATES_TO]->(c2:Chunk) 
+    WHERE c1.filename <> c2.filename 
+    RETURN c1.filename, c2.filename, r.similarity 
+    ORDER BY r.similarity DESC LIMIT 10
+    
+    // Recherche de contenu
+    MATCH (c:Chunk) 
+    WHERE c.text CONTAINS $searchTerm 
+    RETURN c.filename, c.text LIMIT 5
+    ```
+    
+    **Sécurité:**
+    - Aucune restriction sur les requêtes (utiliser avec précaution)
+    - Accès complet à la base de données
+    - Recommandé pour développement et debug uniquement
+    
+    **Comportement par défaut:**
+    Si aucune requête n'est fournie, retourne `CALL db.schema.visualization()`
+    pour visualiser la structure de la base.
+    """
     try:
         if request is None or not request.query:
             # Requête par défaut : topologie de la base

@@ -175,11 +175,6 @@ WITH documents, count(c) as chunks
 MATCH ()-[r]->() 
 RETURN documents, chunks, count(r) as total_relations;
 
-// 🔗 Relations par type avec comptage
-MATCH ()-[r]->() 
-RETURN type(r) as relation_type, count(r) as count 
-ORDER BY count DESC;
-
 // 📄 Documents avec leurs chunks et métadonnées
 MATCH (d:Document)-[:CONTAINS_CHUNK]->(c:Chunk)
 RETURN d.filename, d.chunk_count, d.created_at, 
@@ -204,12 +199,6 @@ RETURN c1.filename, c2.filename, r.similarity,
 ORDER BY r.similarity DESC
 LIMIT 20;
 
-// 🔍 Recherche textuelle simple
-MATCH (c:Chunk)
-WHERE toLower(c.text) CONTAINS toLower('votre_terme_recherche')
-RETURN c.filename, c.chunkIndex, c.text[0..150] + '...' as preview
-LIMIT 10;
-
 // 📊 Chunks les plus connectés (hubs sémantiques)
 MATCH (c:Chunk)-[r:RELATES_TO]-()
 WITH c, count(r) as connections
@@ -218,11 +207,6 @@ RETURN c.filename, c.chunkIndex, connections,
        c.text[0..100] + '...' as preview
 ORDER BY connections DESC
 LIMIT 10;
-
-// 🎯 Analyse de qualité des embeddings
-MATCH (c:Chunk)
-WHERE c.textEmbedding IS NULL
-RETURN count(c) as chunks_without_embeddings;
 
 // 🔄 Chemins entre deux documents spécifiques  
 MATCH path = shortestPath(
@@ -244,44 +228,6 @@ RETURN c,
 ### **🎯 Requêtes Cypher Avancées**
 
 ```cypher
-// 🧠 Simulation de recherche vectorielle manuelle
-MATCH (c:Chunk)
-WITH c, gds.similarity.cosine(
-    c.textEmbedding, 
-    [/* insérer votre vecteur de 1536 dimensions ici */]
-) AS similarity
-WHERE similarity > 0.8
-RETURN c.filename, c.text[0..150] + '...' as preview, similarity
-ORDER BY similarity DESC
-LIMIT 5;
-
-// 🌍 Analyse de clustering sémantique
-CALL gds.louvain.stream({
-  nodeProjection: 'Chunk',
-  relationshipProjection: {
-    RELATES_TO: {
-      type: 'RELATES_TO',
-      orientation: 'UNDIRECTED',
-      properties: 'similarity'
-    }
-  }
-}) YIELD nodeId, communityId
-WITH gds.util.asNode(nodeId) AS chunk, communityId
-RETURN communityId, 
-       collect(DISTINCT chunk.filename) as documents,
-       count(chunk) as chunks_in_cluster,
-       collect(chunk.text[0..50])[0..3] as sample_texts
-ORDER BY chunks_in_cluster DESC;
-
-// � Analyse de densité du graphe par document
-MATCH (d:Document)-[:CONTAINS_CHUNK]->(c:Chunk)
-OPTIONAL MATCH (c)-[r:RELATES_TO]-()
-WITH d, count(DISTINCT c) as chunks, count(r) as relations
-RETURN d.filename, chunks, relations, 
-       CASE WHEN chunks > 1 
-            THEN round((relations * 1.0) / (chunks * (chunks-1)) * 100, 2) 
-            ELSE 0 END as density_percentage
-ORDER BY density_percentage DESC;
 
 // 🔗 Détection de chunks "pont" entre documents
 MATCH (c:Chunk)-[:RELATES_TO]-(other:Chunk)
@@ -291,12 +237,6 @@ WHERE size(connected_docs) > 2
 RETURN c.filename, c.chunkIndex, connected_docs,
        c.text[0..100] + '...' as bridge_content
 ORDER BY size(connected_docs) DESC;
-
-// 📈 Évolution temporelle de l'ingestion
-MATCH (d:Document)
-WITH d.created_at.year as year, d.created_at.month as month, count(d) as docs
-RETURN year, month, docs
-ORDER BY year, month;
 
 // 🎯 Recherche par proximité sémantique (k-NN manuel)
 MATCH (target:Chunk {filename: 'your-doc.pdf', chunkIndex: 0})
@@ -547,52 +487,6 @@ python test_parallel_efficiency.py  # Performance parallèle
 - ✅ **Millions de chunks** supportés (index vectoriel Neo4j)
 - ✅ **Centaines de documents** simultanés
 - ✅ **Requêtes parallèles** sans dégradation
-
-### **🔧 Maintenance et Surveillance Neo4j**
-
-**Requêtes de maintenance à exécuter régulièrement :**
-
-```cypher
-// 📈 Santé générale du graphe
-CALL db.stats.retrieve('GRAPH COUNTS') YIELD data
-RETURN data;
-
-// 🗂️ Informations sur les index vectoriels
-SHOW INDEXES 
-WHERE type = 'VECTOR'
-YIELD name, state, populationPercent, type;
-
-// 📊 Analyse de l'utilisation mémoire
-CALL dbms.queryJmx('java.lang:type=Memory') 
-YIELD attributes 
-RETURN attributes.HeapMemoryUsage, attributes.NonHeapMemoryUsage;
-
-// 🔍 Performance des requêtes lentes
-CALL db.stats.retrieve('QUERIES') YIELD data
-UNWIND data.queries as query
-WHERE query.elapsedTimeMillis > 1000
-RETURN query.query, query.elapsedTimeMillis, query.executionCount
-ORDER BY query.elapsedTimeMillis DESC
-LIMIT 10;
-
-// 🧹 Nettoyage : Supprimer chunks sans embeddings
-MATCH (c:Chunk)
-WHERE c.textEmbedding IS NULL
-DELETE c;
-
-// 🔄 Re-création de l'index vectoriel (si nécessaire)
-DROP INDEX GrahRAG IF EXISTS;
-CREATE VECTOR INDEX GrahRAG FOR (c:Chunk) ON (c.textEmbedding)
-OPTIONS {indexConfig: {
-  `vector.dimensions`: 1536,
-  `vector.similarity_function`: 'cosine'
-}};
-
-// 📋 Backup des métadonnées importantes
-MATCH (d:Document)
-RETURN d.filename, d.created_at, d.chunk_count, d.file_extension
-ORDER BY d.created_at DESC;
-```
 
 ## 🤝 Contribution
 

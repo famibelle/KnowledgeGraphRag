@@ -1,0 +1,46 @@
+# 🧠 GraphRAG Knowledge Graph - Docker Compose (PoC Demo)
+version: '3.8'
+
+services:
+  graphrag:
+    build: .
+    image: graphrag-knowledge-graph:latest
+    container_name: graphrag-demo
+    ports:
+      - "8000:8000"  # FastAPI
+      - "8501:8501"  # Streamlit
+    environment:
+      # ⚠️ IMPORTANT: Configurez ces variables dans .env.docker
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - NEO4J_URI=${NEO4J_URI}
+      - NEO4J_USERNAME=${NEO4J_USERNAME:-neo4j}
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD}
+      - NEO4J_DATABASE=${NEO4J_DATABASE:-neo4j}
+      
+      # Configuration optionnelle
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - DEFAULT_SIMILARITY_THRESHOLD=${DEFAULT_SIMILARITY_THRESHOLD:-0.9}
+      - DEFAULT_TOP_K=${DEFAULT_TOP_K:-5}
+    
+    env_file:
+      - .env.docker
+    
+    volumes:
+      # Optionnel : Persister les logs
+      - ./logs:/app/logs
+    
+    restart: unless-stopped
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    
+    networks:
+      - graphrag-network
+
+networks:
+  graphrag-network:
+    driver: bridge

@@ -1,0 +1,171 @@
+# 🧠 GraphRAG Knowledge Graph - .gitignore
+
+# ========================================
+# 🔐 Environment & Secrets
+# ========================================
+.env
+.env.local
+.env.production
+*.key
+*.pem
+credentials.json
+
+# ========================================
+# 🐍 Python
+# ========================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ========================================
+# 🧪 Testing & Development
+# ========================================
+.pytest_cache/
+.coverage
+.nyc_output
+.tox/
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+
+# Development & debug files
+debug_*.py
+test_*.py
+diagnostic_*.py
+*_test.py
+*_debug.py
+fix_*.py
+explore_*.py
+access_*.py
+
+# ========================================
+# 📊 Data & Documents
+# ========================================
+# Uploaded documents (keep examples)
+PDFs/
+!PDFs/example.pdf
+uploads/
+temp_uploads/
+*.pdf
+!example.pdf
+*.docx
+*.doc
+*.txt
+!README*.txt
+
+# Labs and homework (if sensitive)
+Labs/
+HW_*.pdf
+
+# ========================================
+# 📈 Logs & Results
+# ========================================
+*.log
+logs/
+*.json
+!package.json
+!tsconfig.json
+*_results.json
+*_test_results.json
+
+# ========================================
+# 🎨 Frontend & Assets
+# ========================================
+node_modules/
+.streamlit/secrets.toml
+lib/
+graph_visualizations/
+
+# ========================================
+# 🔧 IDE & Tools
+# ========================================
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ========================================
+# 🚀 Deployment
+# ========================================
+.docker/
+docker-compose.override.yml
+.kubernetes/
+.helm/
+
+# ========================================
+# 📦 Package Managers
+# ========================================
+.venv/
+venv/
+ENV/
+env/
+.env/
+
+# ========================================
+# 🗂️ Project Specific
+# ========================================
+# Old interfaces & experiments
+streamlit_app*.py
+streamlit_simple*.py
+!streamlit_rag_simple.py
+streamlit_kg_interface.py
+streamlit_yfiles.py
+
+# Old scripts & utilities
+run_*.bat
+run_*.md
+start_interface.*
+interface_utils.py
+requirements_interface.txt
+
+# Old documentation
+README_Interface.md
+README_Streamlit.md
+
+# Jupyter notebooks (keep main ones)
+*.ipynb
+!GraphRAGKnowledgeGraph.ipynb
+
+# ========================================
+# 📊 Neo4j & Database
+# ========================================
+# Neo4j local data (if running locally)
+neo4j/
+.neo4j/
+neo4j.conf
+
+# ========================================
+# 🔄 Temporary Files
+# ========================================
+tmp/
+temp/
+.tmp/
+*.tmp
+*.temp

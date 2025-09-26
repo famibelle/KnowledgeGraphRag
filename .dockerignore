@@ -1,0 +1,75 @@
+# 🧠 GraphRAG Knowledge Graph - Docker Ignore
+
+# Environnement et secrets
+.env
+.env.local
+.venv/
+venv/
+*.key
+*.pem
+
+# Git et versioning
+.git/
+.gitignore
+
+# Development files
+debug_*.py
+test_*.py
+diagnostic_*.py
+*_test.py
+*_debug.py
+fix_*.py
+explore_*.py
+
+# Data et uploads
+PDFs/
+Labs/
+uploads/
+logs/
+*.pdf
+*.docx
+*.doc
+*.txt
+!README*.txt
+
+# Cache et temporaires
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+.pytest_cache/
+.coverage
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Documentation et médias
+*.md
+!README.md
+*.ipynb
+graph_visualizations/
+lib/
+
+# Scripts de développement
+run_*.bat
+run_*.md
+start_interface.*
+setup.sh
+setup.bat
+start.py
+
+# Résultats et logs
+*_results.json
+*.log
+
+# Node modules si présents
+node_modules/
+
+# OS
+.DS_Store
+Thumbs.db

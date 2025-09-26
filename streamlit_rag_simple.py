@@ -86,14 +86,25 @@ def query_knowledge_graph(question, top_k=5, similarity_threshold=0.9):
 def semantic_search_with_context(question, top_k=5, similarity_threshold=0.8):
     """Recherche sémantique avec contexte de graphe"""
     try:
+        # Debug: Log des paramètres envoyés
+        request_data = {
+            "question": question,
+            "top_k": top_k,
+            "similarity_threshold": similarity_threshold
+        }
+        print(f"DEBUG - Streamlit request: {request_data}")
+        
         response = requests.post(
             f"{API_BASE_URL}/semantic_search_with_context",
-            json={
-                "question": question,
-                "top_k": top_k,
-                "similarity_threshold": similarity_threshold
-            }
+            json=request_data
         )
+        
+        # Debug: Log de la réponse
+        if response.status_code == 200:
+            result = response.json()
+            print(f"DEBUG - Response total_found: {result.get('total_found', 0)}")
+            print(f"DEBUG - Response chunks count: {len(result.get('chunks', []))}")
+        
         return response.status_code, response.json() if response.status_code == 200 else response.text
     except Exception as e:
         return 500, str(e)
@@ -450,12 +461,10 @@ def rag_query_interface():
         if question.strip():
             with st.spinner("🧠 Recherche en cours..."):
                 try:
-                    # Utiliser le nouveau paramètre de seuil de similarité
-                    status_code, result = query_knowledge_graph(question, top_k, similarity_threshold)
-                    if use_context:
-                        search_type = "RAG avec contexte graphe (via /query)"
-                    else:
-                        search_type = "RAG simple"
+                    # Utiliser l'endpoint avancé avec contexte graphique
+                    status_code, result = semantic_search_with_context(question, top_k, similarity_threshold)
+                    search_type = "RAG avec contexte graphe enrichi (via /semantic_search_with_context)"
+                    st.info(f"🧠 **Mode Recherche Avancée** : Utilise le graphe de connaissances pour analyser les relations entre chunks et fournir un contexte enrichi")
                     
                     if status_code == 200:
                         threshold_used = result.get('similarity_threshold_used', similarity_threshold)
@@ -471,16 +480,60 @@ def rag_query_interface():
                             st.markdown("### 🤖 Réponse Générée")
                             st.markdown(result['answer'])
                         
-                        # Affichage des chunks trouvés (format /semantic_search_with_context)
+                        # Affichage enrichi des chunks avec contexte graphique
                         if 'chunks' in result and result['chunks']:
-                            st.markdown("### 📚 Sources Trouvées")
+                            st.markdown("### 📚 Sources Trouvées avec Contexte Graphique")
                             for i, chunk in enumerate(result['chunks'], 1):
                                 score = chunk.get('score', 0)
                                 source = chunk.get('source', 'N/A')
                                 text = chunk.get('text', '')
                                 
-                                with st.expander(f"Source {i}: {source} (Score: {score:.3f})"):
+                                # Informations contextuelles
+                                next_chunk = chunk.get('next_chunk')
+                                prev_chunk = chunk.get('previous_chunk')
+                                related_chunks = chunk.get('related_chunks', [])
+                                document_info = chunk.get('document_info')
+                                
+                                with st.expander(f"📄 Source {i}: {source} (Score: {score:.3f}) - Contexte enrichi"):
+                                    # Contenu principal
+                                    st.markdown("**📝 Contenu:**")
                                     st.text(text)
+                                    
+                                    # Contexte du graphe
+                                    if next_chunk or prev_chunk or related_chunks:
+                                        st.markdown("---")
+                                        st.markdown("**🔗 Contexte du Graphe:**")
+                                        
+                                        col1, col2 = st.columns(2)
+                                        
+                                        with col1:
+                                            if prev_chunk:
+                                                st.markdown("**⬅️ Chunk précédent:**")
+                                                st.text(prev_chunk.get('text', 'N/A')[:100] + '...')
+                                            
+                                            if next_chunk:
+                                                st.markdown("**➡️ Chunk suivant:**")
+                                                st.text(next_chunk.get('text', 'N/A')[:100] + '...')
+                                        
+                                        with col2:
+                                            if related_chunks:
+                                                st.markdown(f"**🕸️ Chunks liés ({len(related_chunks)}):**")
+                                                for j, related in enumerate(related_chunks[:2], 1):
+                                                    st.text(f"{j}. {related.get('filename', 'N/A')}")
+                                                    st.text(f"   {related.get('text', '')[:80]}...")
+                                    
+                                    # Métadonnées du document
+                                    if document_info:
+                                        st.markdown("---")
+                                        st.markdown("**📋 Métadonnées Document:**")
+                                        doc_cols = st.columns(3)
+                                        with doc_cols[0]:
+                                            st.metric("Chunks total", document_info.get('chunk_count', 'N/A'))
+                                        with doc_cols[1]:
+                                            if document_info.get('created_at'):
+                                                st.metric("Créé le", str(document_info.get('created_at'))[:10])
+                                        with doc_cols[2]:
+                                            st.metric("Extension", document_info.get('file_extension', 'N/A'))
                         
                         # Affichage des résultats (format /query)
                         elif 'results' in result and result['results']:
