@@ -169,3 +169,4 @@ temp/
 .tmp/
 *.tmp
 *.temp
+github-secrets-setup.md
