@@ -41,7 +41,7 @@ app = FastAPI(
     - Création automatique du graphe de connaissances
     
     🧠 **Génération de réponses LLM** 
-    - Integration ChatGPT-3.5-turbo
+    - Integration ChatGPT-4o-mini
     - Réponses contextualisées basées sur les documents
     - Filtrage intelligent pour éviter les hallucinations
     
@@ -54,7 +54,7 @@ app = FastAPI(
     
     - **Base de données**: Neo4j (graphe vectoriel)
     - **Embeddings**: OpenAI text-embedding-3-small (1536 dimensions)
-    - **LLM**: OpenAI GPT-3.5-turbo
+    - **LLM**: OpenAI GPT-4o-mini
     - **Backend**: FastAPI (Python async)
     - **Recherche**: Similarité cosinus avec index vectoriel
     
@@ -207,7 +207,7 @@ async def query_chunks(request: QueryRequest):
     **Fonctionnalités:**
     - Recherche vectorielle avec embedding OpenAI (text-embedding-3-small)
     - Filtrage par seuil de similarité pour éviter les résultats non pertinents
-    - Génération de réponse contextuelle via ChatGPT-3.5-turbo
+    - Génération de réponse contextuelle via GPT-3.5-turbo
     - Support multilingue (optimisé pour le français)
     
     **Paramètres:**
@@ -301,7 +301,7 @@ async def query_chunks(request: QueryRequest):
     context = "\n\n".join([r['text'] for r in results])
     
     # Génération de réponse LLM en async
-    llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0)
+    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
     prompt = f"Voici le contexte extrait de documents:\n{context}\n\nQuestion utilisateur: {request.question}\n\nRéponds de façon concise et précise."
     
     # Exécution LLM en async
@@ -879,7 +879,7 @@ async def semantic_search_with_context(request: SemanticSearchRequest):
     context = "\n\n".join([chunk.get('text', '') for chunk in enriched_chunks])
     
     if context.strip():  # Seulement si on a du contexte
-        llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0)
+        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
         prompt = f"Voici le contexte extrait de documents avec contexte graphique:\n{context}\n\nQuestion utilisateur: {request.question}\n\nRéponds de façon concise et précise."
         
         # Génération LLM en async
