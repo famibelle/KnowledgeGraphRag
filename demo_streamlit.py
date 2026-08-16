@@ -13,8 +13,43 @@ import streamlit as st
 import streamlit.components.v1 as components
 from neo4j_graphrag.retrievers import Text2CypherRetriever
 from neo4j_viz.neo4j import from_neo4j
+from streamlit_mermaid import st_mermaid
 
 import demo_build_kg as kg
+
+# Le diagramme de la pipeline, affiché en préambule. Mermaid est embarqué dans le
+# paquet streamlit-mermaid : aucun appel réseau, il s'affiche hors connexion.
+PIPELINE = """
+flowchart TD
+    A["Documents deposes<br/>pdf · txt · md"] --> B["Extraction du texte<br/>pypdf ou lecture directe"]
+
+    B --> C["SchemaFromTextExtractor<br/>le LLM propose les types"]
+    C --> D{"Relecture<br/>et correction"}
+    D --> E["Schema contraint<br/>entites + relations"]
+
+    B --> F["Decoupage<br/>1000 car. / 100 de recouvrement"]
+    F --> G["Embeddings<br/>text-embedding-3-small"]
+    F --> H["Extraction d'entites<br/>gpt-4o-mini"]
+    E -.->|contraint| H
+    H --> I["Resolution d'entites<br/>fusion sur la propriete name"]
+
+    G --> J[("Chunk<br/>+ textEmbedding")]
+    I --> K[("Entites typees<br/>+ relations")]
+    B --> L[("Document")]
+    K -.->|FROM_CHUNK| J
+    J -.->|FROM_DOCUMENT| L
+
+    K --> M["Text2CypherRetriever<br/>question en langage naturel"]
+    M --> N["Cypher genere<br/>affiche a l'ecran"]
+    N --> O["Reponse ancree<br/>sur les lignes retournees"]
+
+    classDef llm fill:#fff3e0,stroke:#e69138,color:#333
+    classDef store fill:#e3f2fd,stroke:#4a86c8,color:#333
+    classDef choix fill:#fce4ec,stroke:#c0507a,color:#333
+    class C,H,M llm
+    class J,K,L store
+    class D choix
+"""
 
 st.set_page_config(page_title="GraphRAG Builder", page_icon="🕸️", layout="wide")
 
@@ -94,6 +129,7 @@ else:
 PAGE = st.sidebar.radio(
     "Étapes",
     [
+        "0 · La pipeline",
         "1 · Documents",
         "2 · Schéma d'extraction",
         "3 · Construction",
@@ -110,9 +146,49 @@ if "schema" in st.session_state:
     )
 
 # --------------------------------------------------------------------------- #
+# 0 · La pipeline
+# --------------------------------------------------------------------------- #
+if PAGE.startswith("0"):
+    st.title("La pipeline, de bout en bout")
+    st.markdown(
+        "Des documents déposés par l'utilisateur vers un graphe de connaissances "
+        "interrogeable. Trois appels au LLM seulement, en orange — tout le reste est "
+        "déterministe."
+    )
+    st_mermaid(PIPELINE, height="720px")
+
+    c1, c2, c3 = st.columns(3)
+    c1.markdown(
+        "#### Le schéma contraint\n"
+        "Le seul vrai levier de qualité. En extraction libre, le modèle produit "
+        "`Société` / `Entreprise` / `Organisation` pour la même chose et plus aucun "
+        "chemin ne relie rien. Il est proposé par le LLM, puis **relu et corrigé**."
+    )
+    c2.markdown(
+        "#### La provenance\n"
+        "Chaque entité garde un lien `FROM_CHUNK` vers le passage qui l'a produite, et "
+        "chaque chunk un lien `FROM_DOCUMENT` vers son fichier. Toute affirmation du "
+        "graphe remonte à une phrase du texte."
+    )
+    c3.markdown(
+        "#### La récupération\n"
+        "La question devient du Cypher, **affiché à l'écran**. La réponse est formulée "
+        "à partir des seules lignes retournées. Un auditeur peut contester la requête, "
+        "pas seulement la réponse."
+    )
+
+    st.divider()
+    st.caption(
+        "Les deux couches du graphe : la couche **lexicale** (Document → Chunk) porte le "
+        "texte et les embeddings ; la couche **métier** (entités typées et leurs "
+        "relations) porte le sens. C'est la seconde qui permet de répondre à des "
+        "questions d'agrégation, qu'une recherche par similarité ne sait pas poser."
+    )
+
+# --------------------------------------------------------------------------- #
 # 1 · Documents
 # --------------------------------------------------------------------------- #
-if PAGE.startswith("1"):
+elif PAGE.startswith("1"):
     st.title("Documents")
     st.caption(
         f"Formats acceptés : {', '.join(sorted(kg.FORMATS))}. "
