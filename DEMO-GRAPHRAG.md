@@ -1,50 +1,21 @@
-# 🧪 Démo GraphRAG — Référentiel documentaire d'entreprise
+# 🕸️ GraphRAG Builder — des documents vers un graphe interrogeable
 
-Démo autonome de construction d'un knowledge graph à partir de PDF de procédures internes,
-avec comparaison **RAG vectoriel seul** vs **RAG enrichi par le graphe**.
+Démo autonome : l'utilisateur dépose des documents, la pipeline en extrait un graphe de
+connaissances, et le graphe se laisse interroger en langage naturel.
 
-Contrairement au reste du projet (qui calcule les embeddings *dans* Neo4j via
-`genai.vector.encode`), cette démo s'appuie sur la librairie officielle
-[`neo4j-graphrag`](https://neo4j.com/docs/neo4j-graphrag-python/) et calcule les
-embeddings côté Python. Elle écrit dans la même base et réutilise le même index vectoriel.
-
-## 🎯 Ce que la démo montre
-
-| | Question type | Résultat mesuré |
-|---|---|---|
-| 🔍 **Consultation** | « Quel est le plafond d'hébergement pour Paris ? » | Le RAG vectoriel seul suffit — 3/3 réponses correctes |
-| 🕸️ **Agrégation / filtre** | « Tous les seuils qui impliquent la Direction Financière » | Le vectoriel échoue (2 faux positifs sur 3), le graphe répond juste |
-
-Conclusion : **le graphe ne sert pas à mieux retrouver, il sert à répondre à des questions
-qu'une recherche par similarité ne sait pas poser.** Un `top_k` ne peut pas balayer un
-référentiel entier ni filtrer sur un critère structurel.
-
-## 📚 Corpus
-
-Six documents fictifs de procédure interne dans `PDFs/`. La démo applique l'hypothèse
-« la GED ne sert que la version en vigueur » **littéralement**, par un filtre sur le champ
-`Statut` de l'en-tête :
-
-| Fichier | Statut | Ingéré |
-|---|---|---|
-| `01_DIR-FIN-004_..._v1.2_2023.pdf` | ABROGÉE | ❌ |
-| `02_DIR-FIN-004_..._v2.0_2026.pdf` | EN VIGUEUR | ✅ |
-| `03_POL-ACH-001_Politique_Achats_et_Seuils.pdf` | EN VIGUEUR | ✅ |
-| `04_GUI-CON-002_Guide_Utilisateur_Concur.pdf` | EN VIGUEUR | ✅ |
-| `05_FAQ_Procurement_Finance_Intranet.pdf` | *(absent)* | ❌ |
-| `06_NOTE-2026-017_Note_de_service_Transition.pdf` | *(absent)* | ❌ |
-
-> ⚠️ Le filtre n'est pas cosmétique. Le document 01 et la FAQ 05 contiennent des valeurs
-> périmées (forfait repas de 35 EUR, délai de 60 jours, justificatif au-delà de 25 EUR)
-> qui contredisent la directive en vigueur. Sans filtre, la FAQ — rédigée sous forme de
-> questions — remonte **en tête** de la recherche vectorielle et le système répond faux.
+Construite sur [`neo4j-graphrag`](https://neo4j.com/docs/neo4j-graphrag-python/), la
+librairie officielle. Contrairement au reste du projet — qui calcule les embeddings
+*dans* Neo4j via `genai.vector.encode` — cette démo les calcule côté Python. Elle écrit
+dans la même base et réutilise le même index vectoriel.
 
 ## ⚡ Lancement
 
-### Prérequis
+```bash
+.venv/bin/python -m streamlit run demo_streamlit.py     # interface
+.venv/bin/python demo_build_kg.py                       # ou en ligne de commande
+```
 
-- Le `.env` de la racine renseigné (`NEO4J_URI`, `NEO4J_USERNAME`, `NEO4J_PASSWORD`, `OPENAI_API_KEY`)
-- L'index vectoriel créé sur la base :
+Prérequis : le `.env` de la racine renseigné, et l'index vectoriel créé sur la base :
 
 ```cypher
 CREATE VECTOR INDEX GrahRAG IF NOT EXISTS
@@ -52,163 +23,78 @@ FOR (c:Chunk) ON (c.textEmbedding)
 OPTIONS {indexConfig: {`vector.dimensions`: 1536, `vector.similarity_function`: 'cosine'}}
 ```
 
-### Interface graphique
+## 🔄 La pipeline, en six étapes
 
-```bash
-.venv/bin/python -m streamlit run demo_streamlit.py
-```
-
-Six étapes, sur http://localhost:8501 :
-
-| Étape | Contenu |
+| Étape | Ce qui se passe |
 |---|---|
-| 1 · Corpus & filtre | Les documents, leur statut, et pourquoi certains sont écartés |
-| 2 · Graphe construit | Volumétrie, schéma, désambiguïsation des plafonds, rendu interactif `neo4j-viz` |
-| 3 · Entités extraites | Les entités produites par le LLM, avec leur chunk source — ratés compris |
-| 4 · Interroger le graphe | Questions métier traduites en Cypher, requête affichée |
-| 5 · Exploration Cypher | Requête libre |
-| 6 · Gérer le corpus | Ajouter ou retirer un PDF, reconstruire le graphe |
+| **1 · Documents** | Dépôt de fichiers (`.pdf`, `.txt`, `.md`), listés avec leur état d'ingestion. Suppression du disque **et** du graphe. |
+| **2 · Schéma d'extraction** | Le LLM propose les types d'entités et de relations à partir d'un échantillon du corpus. **Le schéma est éditable en JSON.** |
+| **3 · Construction** | Découpage, embeddings, extraction d'entités. Ingestion incrémentale ou reconstruction complète. |
+| **4 · Graphe** | Volumétrie, vues interactives (`neo4j-viz`), voisinage d'une entité. |
+| **5 · Entités extraites** | L'inventaire de ce que le LLM a produit, avec le chunk source de chaque entité. |
+| **6 · Interroger** | Question en langage naturel → Cypher (`Text2CypherRetriever`) → résultat → réponse. La requête générée est affichée. |
 
-L'interface est **entièrement orientée graphe** : pas de recherche vectorielle, la
-récupération se fait par requête Cypher affichée à l'écran, donc contestable par un
-auditeur. La comparaison vectoriel/graphe reste disponible en ligne de commande dans
-`demo_query.py`, qui a servi à établir les mesures ci-dessous.
+## 🎯 Le point de conception
 
-### Exécution en ligne de commande
+**Le schéma d'extraction est le principal levier de qualité.** En extraction libre, le
+modèle produit `Société` / `Entreprise` / `Organisation` pour la même chose et le graphe
+devient inexploitable — aucun chemin ne relie plus rien.
 
-```bash
-# 1. Vider le graphe (chaque reconstruction repart de zéro, sinon les ingestions se superposent)
-.venv/bin/python -c "import os,neo4j;from dotenv import load_dotenv;load_dotenv();\
-d=neo4j.GraphDatabase.driver(os.environ['NEO4J_URI'],auth=(os.environ['NEO4J_USERNAME'],os.environ['NEO4J_PASSWORD']));\
-d.session().run('MATCH (n) DETACH DELETE n');d.close();print('graphe vidé')"
+L'étape 2 rend ce choix explicite : le schéma est proposé, puis **relu et corrigé** avant
+construction. C'est le geste qui sépare une démo qui marche d'une démo qui impressionne.
 
-# 2. Construire le graphe (~2 min, ~20 appels LLM)
-.venv/bin/python demo_build_kg.py
+Une propriété `name` est ajoutée d'office à chaque type d'entité : le résolveur de la
+librairie ne compare que celle-là.
 
-# 3. Interroger — les 3 questions en double affichage vectoriel / graphe
-.venv/bin/python demo_query.py
-```
+## ⚠️ Limites, mesurées et assumées
 
-> Les deux scripts se lancent **depuis la racine** (ils lisent `.env` via `load_dotenv()`),
-> contrairement à l'API qui doit être lancée depuis `KnowledgeGraphRagAPI/`.
+**L'extraction n'est pas déterministe.** À `temperature=0`, deux exécutions sur le même
+corpus donnent des volumétries différentes (58 puis 61 entités sur un corpus de test).
+Les valeurs métier restent stables. Ne validez jamais une exécution sur un décompte.
 
-## 🕸️ Graphe produit
+**La proposition de schéma est instable** — et sort tantôt en français, tantôt en
+anglais selon l'échantillon tiré. D'où l'édition manuelle.
 
-```
-(:Document)<-[:FROM_DOCUMENT]-(:Chunk)-[:NEXT_CHUNK]->(:Chunk)
-(:Chunk)<-[:FROM_CHUNK]-(:Role|Seuil|Zone|Outil|DocumentRef)
-(:Role)-[:APPROUVE]->(:Seuil)-[:S_APPLIQUE_A]->(:Zone)
-(:Seuil)-[:DECLENCHE]->(:Role)
-(:Role)-[:UTILISE]->(:Outil)
-```
+**La négation n'est pas gérée.** « Ce seuil est supprimé » produit quand même une entité
+pour ce seuil.
 
-| Élément | Volume |
-|---|---|
-| Documents / Chunks | 3 / 17 *(déterministe)* |
-| Entités typées | ~55–60 (Seuil, Role, Zone, DocumentRef, Outil) |
-| Relations métier | ~45–55 |
+**Le résolveur d'entités ne compare que `name`.** Il fusionne les mentions d'une même
+entité — utile — mais écrase aussi des nœuds distincts partageant un libellé générique.
+Sur un corpus de test, les quatre lignes d'un tableau de plafonds ont fusionné en une
+seule parce qu'elles s'appelaient toutes « Plafond par nuit ».
 
-> ℹ️ Le découpage et les embeddings sont déterministes, **l'extraction ne l'est pas** :
-> malgré `temperature=0`, deux exécutions donnent des volumétries différentes (58 vs 61
-> entités sur deux runs consécutifs). Les valeurs métier, elles, restent stables — les
-> 7 plafonds sont corrects à chaque run. Ne comptez pas sur des chiffres exacts pour
-> valider une exécution ; validez sur le contenu.
+**`Text2CypherRetriever` échoue parfois** : le LLM produit du Cypher que Neo4j refuse.
+L'interface le signale et propose d'écrire la requête à la main.
 
-Le type `Seuil` porte les valeurs (`montant`, `unite`, `consequence`) : c'est lui qui rend
-les chiffres interrogeables. Exemple de ce que le graphe désambiguïse — la ligne PDF
-`Luxembourg 25 EUR 40 EUR 65 EUR`, illisible hors de son en-tête de colonne, devient :
+## 🔧 Pièges de configuration `neo4j-graphrag`
 
-```
-Plafond repas Luxembourg          65 EUR  ─S_APPLIQUE_A→ Luxembourg
-Plafond repas Union européenne    75 EUR  ─S_APPLIQUE_A→ Union européenne
-Plafond repas Hors Union eur.     90 EUR  ─S_APPLIQUE_A→ Hors Union européenne
-```
+Quatre défauts de la librairie qui **échouent en silence** — aucune erreur levée, juste
+un résultat faux :
 
-## ⚠️ Pièges de configuration `neo4j-graphrag`
-
-Quatre défauts de la librairie qui **échouent en silence** sur ce projet — aucune erreur
-levée, juste un résultat faux :
-
-| Réglage | Défaut | Valeur nécessaire | Symptôme si laissé au défaut |
+| Réglage | Défaut | Valeur nécessaire | Symptôme sinon |
 |---|---|---|---|
 | `chunk_embedding_property` | `embedding` | `textEmbedding` | l'index `GrahRAG` reste vide, la recherche renvoie 0 résultat |
-| `text_splitter` | `FixedSizeSplitter(4000)` | `RecursiveCharacterTextSplitter(1000, 100)` | un chunk ≈ un document ; et la coupe au caractère près tranche les tableaux de plafonds |
-| propriété identifiante | — | doit s'appeler **`name`** | le résolveur d'entités ne compare que `name` : nommez-la `nom`, il tourne sans rien fusionner |
-| `name` d'un `Seuil` | — | doit être **discriminant** | les 4 plafonds d'hébergement fusionnent à 160 EUR car ils partagent le libellé « Plafond par nuit » |
+| `text_splitter` | `FixedSizeSplitter(4000)` | `RecursiveCharacterTextSplitter(1000, 100)` | un chunk ≈ un document, et la coupe au caractère près tranche les tableaux |
+| propriété identifiante | — | doit s'appeler **`name`** | le résolveur tourne sans rien fusionner |
+| modèle d'embedding | `genai.vector.encode` utilise **ada-002** | préciser `text-embedding-3-small` | 1536 dimensions des deux côtés, donc aucune erreur — mais recherche entre deux espaces vectoriels : score max 0.509 au lieu de 0.768 |
 
-Le dernier est le plus vicieux : la résolution d'entités, une fois qu'elle *fonctionne*,
-écrase les lignes d'un tableau qui partagent le même intitulé de colonne. Correctif appliqué
-dans le schéma — la description du type impose d'inclure la zone dans le `name`. Après
-correction : 7 plafonds sur 7 corrects.
+Autre divergence : `SimpleKGPipeline` écrit `(:Chunk)-[:FROM_DOCUMENT]->(:Document)`,
+soit l'inverse du `CONTAINS_CHUNK` du reste du projet, avec `path` au lieu de
+`filename`. `demo_build_kg.py` applique donc une projection de compatibilité en fin
+d'ingestion (constante `COMPAT`), sans quoi l'API et l'interface Streamlit du projet ne
+voient rien.
 
-### Compatibilité avec l'API et l'interface Streamlit
+Les formats non-PDF n'ont pas de loader dans la librairie : le texte est passé
+directement, mais aucun nœud `Document` n'est alors créé. La constante `RATTACHER` le
+crée et y raccroche les chunks laissés orphelins.
 
-`SimpleKGPipeline` écrit un modèle différent de celui du reste du projet :
-`(:Chunk)-[:FROM_DOCUMENT]->(:Document)` — sens inverse de `CONTAINS_CHUNK` — avec
-`Document.path` et `Chunk.index`, là où l'API et l'interface sont indexées sur
-**`filename`**. Sans correctif, la démo est **invisible dans l'UI** : toutes les requêtes
-renvoient du vide, sans lever d'erreur.
+## 📦 Fichiers
 
-`demo_build_kg.py` applique donc une passe de projection en fin d'ingestion (constante
-`COMPAT`) qui ajoute `filename`, `chunk_index`, `id`, `chunk_count` et les relations
-`CONTAINS_CHUNK`. L'interface Streamlit affiche alors la démo normalement.
-
-### ⚠️ Le modèle d'embedding : une dimension identique n'est pas un modèle identique
-
-Piège le plus coûteux rencontré. `genai.vector.encode(text, "OpenAI", {token, endpoint})`
-**utilise `text-embedding-ada-002` par défaut** si aucun modèle n'est précisé, alors que la
-démo encode les chunks en `text-embedding-3-small`. Les deux produisent des vecteurs de
-1536 dimensions : l'index les accepte, aucune erreur n'est levée, et la recherche compare
-silencieusement deux espaces vectoriels différents.
-
-Mesure sur la même question :
-
-| Encodage de la requête | Score du meilleur résultat |
+| Fichier | Rôle |
 |---|---|
-| défaut (`ada-002`) | **0.509** — bruit, résultats non pertinents |
-| `model: "text-embedding-3-small"` | **0.768** — résultats corrects |
-
-Les trois appels `genai.vector.encode` de `KnowledgeGraphRagAPI/main.py` précisent
-désormais `model: "text-embedding-3-small"`. Cela corrige aussi une incohérence
-préexistante du projet : `.env` et `main.py:152` déclaraient `text-embedding-3-small`
-alors que le chemin d'encodage réel utilisait `ada-002`.
-
-## 📊 Exemple de contraste
-
-**Question** — « Liste tous les seuils du référentiel qui déclenchent une intervention
-de la Direction Financière. »
-
-*RAG vectoriel* : renvoie le tableau des seuils d'achat et le recopie sans filtrer sur le
-critère — 2 des 3 seuils cités n'impliquent pas la Direction Financière.
-
-*Requête sur le graphe* : le bon ensemble, réparti sur deux documents.
-
-```cypher
-MATCH (r:Role)-[rel]-(x:Seuil)
-WHERE toLower(r.name) CONTAINS 'financi'
-RETURN DISTINCT x.name, x.montant, x.unite, type(rel)
-ORDER BY x.montant
-```
-
-| Seuil | Montant | Source |
-|---|---|---|
-| Durée de vol (classe affaires) | 10 heures | DIR-FIN-004 §3.2 |
-| Coût prévisionnel de mission | 5 000 EUR | DIR-FIN-004 §2 |
-| Marché 60 000 – 143 000 EUR | 143 000 EUR | POL-ACH-001 §3 |
-
-Les deux premières lignes viennent de sections que la recherche vectorielle n'a jamais
-rapportées.
-
-## 🔧 Limites connues
-
-- L'extraction de la chaîne d'approbation est correcte à **4/5** — le palier
-  1 500–15 000 EUR se voit attribuer le Comité de Direction au lieu du responsable budgétaire.
-- Le type `DocumentRef` capte encore du bruit (« directive », « version 1.2 ») malgré
-  l'instruction de schéma.
-- Une négation n'est pas gérée : « le seuil de 25 EUR est supprimé » produit un `Seuil` à 25 EUR.
-- Les ligatures PDF (`ﬁ`, `ﬀ`, `ﬃ`) ne sont pas normalisées. Sans conséquence pour une
-  recherche vectorielle, mais toute requête en texte exact (`CONTAINS 'justificatif'`)
-  échoue. Correctif : `unicodedata.normalize('NFKC', text)` à l'ingestion.
+| `demo_build_kg.py` | La pipeline : extraction de texte, proposition de schéma, ingestion, retrait, purge |
+| `demo_streamlit.py` | L'interface en six étapes |
+| `demo_query.py` | Comparaison RAG vectoriel / enrichi par le graphe, en ligne de commande |
 
 ---
 
