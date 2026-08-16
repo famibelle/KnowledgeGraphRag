@@ -92,6 +92,25 @@ def corpus() -> list[Path]:
     return retenus
 
 
+# SimpleKGPipeline écrit (:Chunk)-[:FROM_DOCUMENT]->(:Document) avec `path` et `index`.
+# L'API et l'interface Streamlit du projet, elles, sont indexées sur `filename` et sur
+# (:Document)-[:CONTAINS_CHUNK]->(:Chunk). Sans cette projection, la démo est invisible
+# dans l'UI : toutes les requêtes renvoient du vide, sans erreur.
+COMPAT = """
+MATCH (d:Document)
+SET d.filename = last(split(d.path, '/'))
+WITH d
+MATCH (c:Chunk)-[:FROM_DOCUMENT]->(d)
+SET c.filename = d.filename,
+    c.chunk_index = c.index,
+    c.id = d.filename + '-' + toString(c.index)
+MERGE (d)-[:CONTAINS_CHUNK {chunk_index: c.index}]->(c)
+WITH d, count(c) AS n
+SET d.chunk_count = n
+RETURN sum(n) AS chunks
+"""
+
+
 async def main() -> None:
     print("Filtrage du corpus (hypothèse : seule la version en vigueur est ingérée)")
     fichiers = corpus()
@@ -130,6 +149,9 @@ async def main() -> None:
         await pipeline.run_async(file_path=str(pdf))
 
     with driver.session(database=os.environ.get("NEO4J_DATABASE", "neo4j")) as s:
+        n = s.run(COMPAT).single()["chunks"]
+        print(f"\ncompatibilité API/Streamlit : {n} chunks projetés (filename + CONTAINS_CHUNK)")
+
         print("\n--- graphe obtenu ---")
         for r in s.run("MATCH (n) RETURN labels(n)[0] AS label, count(*) AS n ORDER BY n DESC"):
             print(f"  {r['label']:16s} {r['n']}")

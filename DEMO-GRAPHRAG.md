@@ -119,10 +119,37 @@ Le dernier est le plus vicieux : la résolution d'entités, une fois qu'elle *fo
 dans le schéma — la description du type impose d'inclure la zone dans le `name`. Après
 correction : 7 plafonds sur 7 corrects.
 
-Autre divergence à connaître : la relation chunk↔document est écrite
-`(:Chunk)-[:FROM_DOCUMENT]->(:Document)`, soit le **sens inverse** du
-`(:Document)-[:CONTAINS_CHUNK]->(:Chunk)` du reste du projet. Les endpoints
-`/graph_stats` et `/graph_structure` de l'API ne voient donc pas ce graphe.
+### Compatibilité avec l'API et l'interface Streamlit
+
+`SimpleKGPipeline` écrit un modèle différent de celui du reste du projet :
+`(:Chunk)-[:FROM_DOCUMENT]->(:Document)` — sens inverse de `CONTAINS_CHUNK` — avec
+`Document.path` et `Chunk.index`, là où l'API et l'interface sont indexées sur
+**`filename`**. Sans correctif, la démo est **invisible dans l'UI** : toutes les requêtes
+renvoient du vide, sans lever d'erreur.
+
+`demo_build_kg.py` applique donc une passe de projection en fin d'ingestion (constante
+`COMPAT`) qui ajoute `filename`, `chunk_index`, `id`, `chunk_count` et les relations
+`CONTAINS_CHUNK`. L'interface Streamlit affiche alors la démo normalement.
+
+### ⚠️ Le modèle d'embedding : une dimension identique n'est pas un modèle identique
+
+Piège le plus coûteux rencontré. `genai.vector.encode(text, "OpenAI", {token, endpoint})`
+**utilise `text-embedding-ada-002` par défaut** si aucun modèle n'est précisé, alors que la
+démo encode les chunks en `text-embedding-3-small`. Les deux produisent des vecteurs de
+1536 dimensions : l'index les accepte, aucune erreur n'est levée, et la recherche compare
+silencieusement deux espaces vectoriels différents.
+
+Mesure sur la même question :
+
+| Encodage de la requête | Score du meilleur résultat |
+|---|---|
+| défaut (`ada-002`) | **0.509** — bruit, résultats non pertinents |
+| `model: "text-embedding-3-small"` | **0.768** — résultats corrects |
+
+Les trois appels `genai.vector.encode` de `KnowledgeGraphRagAPI/main.py` précisent
+désormais `model: "text-embedding-3-small"`. Cela corrige aussi une incohérence
+préexistante du projet : `.env` et `main.py:152` déclaraient `text-embedding-3-small`
+alors que le chemin d'encodage réel utilisait `ada-002`.
 
 ## 📊 Exemple de contraste
 
