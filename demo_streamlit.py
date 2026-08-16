@@ -287,45 +287,25 @@ elif PAGE.startswith("2"):
         "MATCH (n:__Entity__) UNWIND labels(n) AS l WITH l WHERE NOT l STARTS WITH '__' "
         "RETURN l AS Type, count(*) AS Nombre ORDER BY Nombre DESC"
     )
-    rels = q("MATCH ()-[r]->() RETURN type(r) AS Relation, count(*) AS Nombre ORDER BY Nombre DESC")
-    c1, c2 = st.columns(2)
-    c1.subheader("Entités")
-    c1.dataframe(pd.DataFrame(types), width="stretch", hide_index=True)
-    c2.subheader("Relations")
-    c2.dataframe(pd.DataFrame(rels), width="stretch", hide_index=True)
+    metier = q(
+        "MATCH ()-[r]->() WHERE NOT type(r) IN "
+        "['FROM_CHUNK','FROM_DOCUMENT','CONTAINS_CHUNK','NEXT_CHUNK'] "
+        "RETURN count(r) AS n"
+    )[0]["n"]
 
-    st.subheader("Vue interactive")
-    vues = {
-        "Graphe métier": ("MATCH p=(a:__Entity__)-[r]->(b:__Entity__) RETURN p LIMIT 150", 620),
-        "Couche lexicale": ("MATCH p=(c:Chunk)-[:FROM_DOCUMENT]->(d:SourceDocument) RETURN p LIMIT 80", 560),
-        "Tout": ("MATCH p=()-[r]->() RETURN p LIMIT 300", 640),
-    }
-    vue = st.radio("Vue", list(vues), horizontal=True)
-    cypher, hauteur = vues[vue]
-    with st.expander("Requête"):
-        st.code(cypher, language="cypher")
-    graphe(cypher, hauteur)
+    a, b, c, d_ = st.columns(4)
+    a.metric("Documents", etat["docs"])
+    b.metric("Chunks", etat["chunks"])
+    c.metric("Entités", etat["entites"])
+    d_.metric("Relations métier", metier)
+    st.caption(
+        "Types extraits : " + " · ".join(f"**{x['Type']}** {x['Nombre']}" for x in types)
+    )
 
-    if types:
-        st.subheader("Voisinage d'une entité")
-        t = st.selectbox("Type", [x["Type"] for x in types])
-        noms = [r["n"] for r in q(
-            f"MATCH (n:`{t}`) WHERE n.name IS NOT NULL RETURN DISTINCT n.name AS n ORDER BY n LIMIT 300"
-        )]
-        if noms:
-            nom = st.selectbox("Entité", noms)
-            graphe(
-                f"MATCH p=(n:`{t}` {{name: $nom}})-[]-(v:__Entity__) RETURN p LIMIT 40",
-                480, nom=nom,
-            )
+    graphe("MATCH p=(a:__Entity__)-[r]->(b:__Entity__) RETURN p LIMIT 150", 560)
 
     st.divider()
-    st.header("Ce que le LLM a extrait")
-    st.markdown(
-        f"**{etat['entites']}** entités, sous schéma contraint. Chacune garde le lien "
-        "vers le chunk dont elle provient : la traçabilité est une propriété du graphe, "
-        "pas une promesse."
-    )
+    st.subheader("D'où vient chaque entité")
     df = pd.DataFrame(
         q(
             """
@@ -339,30 +319,20 @@ elif PAGE.startswith("2"):
             """
         )
     )
-    types = sorted(df["Type"].dropna().unique())
-    choix = st.multiselect("Filtrer par type", types, default=types)
-    vue = df[df["Type"].isin(choix)]
-    st.dataframe(vue.drop(columns=["Extrait"]), width="stretch", hide_index=True, height=400)
-    st.caption(f"{len(vue)} entité(s) sur {len(df)}")
-
-    if not vue.empty:
-        st.subheader("Provenance")
-        nom = st.selectbox("Entité", vue["Nom"].dropna().tolist())
-        ligne = vue[vue["Nom"] == nom].iloc[0]
-        st.caption(f"**{ligne['Type']}** — source : {ligne['Source']}")
-        st.info(ligne["Extrait"] or "—")
-        props = q("MATCH (e:__Entity__ {name:$n}) RETURN properties(e) AS p LIMIT 1", n=nom)
-        if props:
-            st.json({k: v for k, v in props[0]["p"].items() if k != "id"})
-
-    st.subheader("Limites à garder en tête")
-    st.markdown(
-        "- L'extraction n'est **pas déterministe** : à `temperature=0`, deux exécutions "
-        "sur le même corpus ne donnent pas le même nombre d'entités.\n"
-        "- La **négation n'est pas gérée** : « ce seuil est supprimé » produit quand même "
-        "une entité pour ce seuil.\n"
-        "- Le résolveur d'entités ne compare que `name` : il fusionne des nœuds distincts "
-        "qui partagent un libellé générique."
+    g, h = st.columns([2, 3])
+    with g:
+        st.dataframe(
+            df[["Type", "Nom"]], width="stretch", hide_index=True, height=320
+        )
+    with h:
+        if not df.empty:
+            nom = st.selectbox("Entité", df["Nom"].dropna().tolist())
+            ligne = df[df["Nom"] == nom].iloc[0]
+            st.caption(f"**{ligne['Type']}** — source : {ligne['Source']}")
+            st.info(ligne["Extrait"] or "—")
+    st.caption(
+        "Chaque entité reste rattachée au passage qui l'a produite : toute affirmation "
+        "du graphe remonte à une phrase du texte."
     )
 
 # --------------------------------------------------------------------------- #
