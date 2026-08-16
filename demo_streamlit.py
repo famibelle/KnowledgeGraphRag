@@ -21,15 +21,17 @@ import demo_build_kg as kg
 # paquet streamlit-mermaid : aucun appel réseau, il s'affiche hors connexion.
 PIPELINE = """
 flowchart TD
-    A["Documents deposes<br/>pdf · txt · md"] --> B["Extraction du texte<br/>pypdf ou lecture directe"]
+    A["Documents deposes<br/>pdf · txt · md"] --> B["Extraction du texte"]
+    B --> F["Decoupage en chunks<br/>1000 car. / 100 de recouvrement"]
 
-    B --> C["SchemaFromTextExtractor<br/>le LLM propose les types"]
-    C --> D{"Relecture<br/>et correction"}
-    D --> E["Schema contraint<br/>entites + relations"]
+    F --> S1["PASSE 1 — Decouverte<br/>extraction LIBRE sur ~20 chunks<br/>echantillonnes dans tous les documents"]
+    S1 --> S1b["Types bruts observes<br/>~70 types, la plupart vus une fois"]
+    S1b --> S2["PASSE 2 — Consolidation<br/>un seul appel : fusion des synonymes"]
+    S2 --> S2b["Normalisation en code<br/>sans accent · relations en MAJUSCULES"]
+    S2b --> E["Schema canonique<br/>~10 types + relations"]
 
-    B --> F["Decoupage<br/>1000 car. / 100 de recouvrement"]
     F --> G["Embeddings<br/>text-embedding-3-small"]
-    F --> H["Extraction d'entites<br/>gpt-4o-mini"]
+    F --> H["PASSE 3 — Extraction<br/>TOUS les chunks, un appel chacun"]
     E -.->|contraint| H
     H --> I["Resolution d'entites<br/>fusion sur la propriete name"]
 
@@ -39,16 +41,16 @@ flowchart TD
     K -.->|FROM_CHUNK| J
     J -.->|FROM_DOCUMENT| L
 
-    K --> M["Text2CypherRetriever<br/>question en langage naturel"]
+    K --> M["Text2Cypher<br/>question en langage naturel"]
     M --> N["Cypher genere<br/>affiche a l'ecran"]
     N --> O["Reponse ancree<br/>sur les lignes retournees"]
 
     classDef llm fill:#fff3e0,stroke:#e69138,color:#333
     classDef store fill:#e3f2fd,stroke:#4a86c8,color:#333
-    classDef choix fill:#fce4ec,stroke:#c0507a,color:#333
-    class C,H,M llm
+    classDef code fill:#e8f5e9,stroke:#5a9c5a,color:#333
+    class S1,S2,H,M llm
     class J,K,L store
-    class D choix
+    class S2b code
 """
 
 st.set_page_config(page_title="GraphRAG Builder", page_icon="🕸️", layout="wide")
@@ -151,18 +153,19 @@ if "schema" in st.session_state:
 if PAGE.startswith("0"):
     st.title("La pipeline, de bout en bout")
     st.markdown(
-        "Des documents déposés par l'utilisateur vers un graphe de connaissances "
-        "interrogeable. Trois appels au LLM seulement, en orange — tout le reste est "
-        "déterministe."
+        "Des documents inconnus a priori vers un graphe de connaissances interrogeable, "
+        "**sans intervention humaine**. Les appels au LLM sont en orange, la "
+        "normalisation déterministe en vert."
     )
-    st_mermaid(PIPELINE, height="720px")
+    st_mermaid(PIPELINE, height="860px")
 
     c1, c2, c3 = st.columns(3)
     c1.markdown(
-        "#### Le schéma contraint\n"
-        "Le seul vrai levier de qualité. En extraction libre, le modèle produit "
-        "`Société` / `Entreprise` / `Organisation` pour la même chose et plus aucun "
-        "chemin ne relie rien. Il est proposé par le LLM, puis **relu et corrigé**."
+        "#### Pourquoi trois passes\n"
+        "En extraction libre, le modèle invente un type par entité ou presque. Mesuré "
+        "sur un corpus réel : **55 types distincts sur 12 chunks, dont 48 vus une seule "
+        "fois**. La passe 2 les fusionne en une dizaine de types canoniques — sans elle, "
+        "le graphe n'a aucune connectivité."
     )
     c2.markdown(
         "#### La provenance\n"
@@ -240,12 +243,11 @@ elif PAGE.startswith("1"):
 # 2 · Schéma
 # --------------------------------------------------------------------------- #
 elif PAGE.startswith("2"):
-    st.title("Schéma d'extraction")
+    st.title("Schéma d'extraction, dérivé automatiquement")
     st.markdown(
-        "Les types d'entités et de relations que le LLM a le droit de produire. "
-        "**C'est le principal levier de qualité de la pipeline** : en extraction libre, "
-        "le modèle invente des types différents d'un chunk à l'autre et le graphe "
-        "devient inexploitable."
+        "Les documents n'étant pas connus a priori, le schéma est **dérivé du corpus "
+        "lui-même**, en deux passes. Aucune saisie n'est nécessaire ; l'édition reste "
+        "possible mais facultative."
     )
 
     fichiers = kg.documents()
@@ -253,22 +255,52 @@ elif PAGE.startswith("2"):
         st.warning("Déposez d'abord des documents (étape 1).")
         st.stop()
 
-    if st.button("Proposer un schéma à partir des documents", type="primary"):
-        with st.spinner("Analyse d'un échantillon du corpus…"):
-            propose = asyncio.run(kg.proposer_schema(fichiers))
-        st.session_state["schema"] = kg.schema_en_dict(propose)
+    c1, c2 = st.columns([2, 1])
+    n = c2.slider("Chunks échantillonnés", 10, 60, 20, step=5,
+                  help="Passe 1 : un appel LLM par chunk échantillonné.")
+    if c1.button("Dériver le schéma", type="primary"):
+        journal = st.empty()
+        with st.spinner("Passe 1 : extraction libre · Passe 2 : consolidation…"):
+            chunks = kg.decouper(fichiers)
+            bruts, rel_brutes = asyncio.run(
+                kg.decouvrir_types(chunks, n=n, trace=lambda m: journal.caption(m))
+            )
+            schema = asyncio.run(
+                kg.consolider(bruts, rel_brutes, trace=lambda m: journal.caption(m))
+            )
+        st.session_state["schema"] = schema
+        st.session_state["bruts"] = bruts.most_common()
         st.rerun()
 
+    if st.session_state.get("bruts"):
+        bruts = st.session_state["bruts"]
+        uniques = sum(1 for _, v in bruts if v == 1)
+        a, b, c = st.columns(3)
+        a.metric("Types bruts découverts", len(bruts))
+        b.metric("Vus une seule fois", f"{uniques} / {len(bruts)}")
+        c.metric("Types canoniques retenus", len(st.session_state["schema"]["node_types"]))
+        with st.expander("Les types bruts, avant consolidation"):
+            st.caption(
+                "C'est ce que produit une extraction libre : un type par entité ou "
+                "presque, avec les collisions habituelles de casse et de synonymie. "
+                "Sans la passe de consolidation, le graphe n'aurait aucune connectivité."
+            )
+            st.dataframe(
+                pd.DataFrame(bruts, columns=["Type brut", "Occurrences"]),
+                width="stretch", hide_index=True, height=260,
+            )
+
     if "schema" not in st.session_state:
-        st.info("Aucun schéma défini. Faites-en proposer un, ou saisissez-le ci-dessous.")
+        st.info("Aucun schéma. Lancez la dérivation ci-dessus.")
         st.session_state["schema"] = {
             "node_types": {}, "relationship_types": [], "patterns": []
         }
 
     s = st.session_state["schema"]
     st.caption(
-        "Relisez et corrigez : la proposition est instable d'une exécution à l'autre, "
-        "et sort tantôt en français tantôt en anglais selon l'échantillon."
+        "Édition facultative. Les libellés sont normalisés en code après consolidation : "
+        "sans accent, relations en majuscules, propriétés `name`/`nom` retirées — un "
+        "prompt ne suffit pas à le garantir."
     )
     texte = st.text_area(
         "Schéma (JSON éditable)",
@@ -311,9 +343,12 @@ elif PAGE.startswith("3"):
     if not fichiers:
         st.warning("Déposez d'abord des documents (étape 1).")
         st.stop()
-    if "schema" not in st.session_state or not st.session_state["schema"]["node_types"]:
-        st.warning("Définissez d'abord un schéma d'extraction (étape 2).")
-        st.stop()
+    auto = not st.session_state.get("schema", {}).get("node_types")
+    if auto:
+        st.info(
+            "Aucun schéma défini : il sera **dérivé automatiquement** du corpus avant "
+            "l'extraction (passes 1 et 2). Vous pouvez aussi le régler à l'étape 2."
+        )
 
     dans_graphe = {r["f"] for r in q("MATCH (d:Document) RETURN d.filename AS f")}
     nouveaux = [f for f in fichiers if f.name not in dans_graphe]
@@ -330,15 +365,32 @@ elif PAGE.startswith("3"):
     )
     cibles = [f for f in fichiers if f.name in choix]
 
-    c1, c2 = st.columns(2)
-    if c1.button("Ingérer (incrémental)", type="primary", disabled=not cibles):
-        journal = st.empty()
-        with st.spinner("Extraction des entités…"):
-            n = asyncio.run(
-                kg.ingerer(cibles, driver(), kg.dict_en_schema(st.session_state["schema"]),
-                           trace=lambda m: journal.caption(m))
+    def schema_pret(journal) -> dict:
+        """Dérive le schéma si aucun n'est défini, puis le met en forme pipeline."""
+        if not st.session_state.get("schema", {}).get("node_types"):
+            chunks = kg.decouper(cibles)
+            bruts, rel = asyncio.run(
+                kg.decouvrir_types(chunks, n=20, trace=lambda m: journal.caption(m))
             )
-        st.success(f"{len(cibles)} document(s) ingéré(s) · {n} chunks au total.")
+            st.session_state["schema"] = asyncio.run(
+                kg.consolider(bruts, rel, trace=lambda m: journal.caption(m))
+            )
+            st.session_state["bruts"] = bruts.most_common()
+        return kg.dict_en_schema(st.session_state["schema"])
+
+    c1, c2 = st.columns(2)
+    if c1.button("Construire" if auto else "Ingérer (incrémental)",
+                 type="primary", disabled=not cibles):
+        journal = st.empty()
+        with st.spinner("Dérivation du schéma puis extraction des entités…"):
+            schema = schema_pret(journal)
+            n = asyncio.run(
+                kg.ingerer(cibles, driver(), schema, trace=lambda m: journal.caption(m))
+            )
+        st.success(
+            f"{len(cibles)} document(s) ingéré(s) · {n} chunks · "
+            f"{len(st.session_state['schema']['node_types'])} types d'entités."
+        )
         rafraichir()
 
     if c2.button("Tout reconstruire", disabled=not cibles):
@@ -350,10 +402,10 @@ elif PAGE.startswith("3"):
             st.session_state["confirm_rebuild"] = False
             journal = st.empty()
             with st.spinner("Reconstruction…"):
+                schema = schema_pret(journal)
                 efface = kg.vider(driver())
                 n = asyncio.run(
-                    kg.ingerer(cibles, driver(), kg.dict_en_schema(st.session_state["schema"]),
-                               trace=lambda m: journal.caption(m))
+                    kg.ingerer(cibles, driver(), schema, trace=lambda m: journal.caption(m))
                 )
             st.success(f"{efface} nœuds effacés · {len(cibles)} document(s) · {n} chunks.")
             rafraichir()

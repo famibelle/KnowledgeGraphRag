@@ -7,7 +7,12 @@ En ligne de commande, ingère tout le dossier `PDFs/` avec un schéma inféré :
     .venv/bin/python demo_build_kg.py
 """
 import asyncio
+import json
 import os
+import random
+import re
+import unicodedata
+from collections import Counter
 from pathlib import Path
 
 import neo4j
@@ -74,6 +79,192 @@ def extraire_texte(chemin: Path) -> str:
 # --------------------------------------------------------------------------- #
 # Schéma d'extraction
 # --------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- #
+# Dérivation automatique du schéma, en trois passes
+# --------------------------------------------------------------------------- #
+# Passe 1 : extraction LIBRE sur un échantillon de chunks — on observe ce que le
+#           modèle produit réellement, au lieu de le deviner depuis du texte brut.
+# Passe 2 : consolidation des types bruts en un jeu canonique, par un seul appel.
+# Passe 3 : extraction sur TOUS les chunks, contrainte par ce schéma (voir ingerer).
+#
+# Sans la passe 2, l'extraction libre produit un type par entité ou presque :
+# mesuré sur 12 chunks d'un corpus réel, 55 types distincts dont 48 vus une seule
+# fois, avec les collisions habituelles (organisation / Organisation / organisme).
+
+DECOUVERTE = """Extrais les entités et les relations de ce texte.
+Choisis toi-même les types qui te paraissent pertinents, sans liste imposée.
+
+Réponds en JSON strict :
+{"entites": [{"nom": "...", "type": "..."}],
+ "relations": [{"source": "...", "type": "...", "cible": "..."}]}
+
+TEXTE :
+"""
+
+CONSOLIDATION = """Voici les types d'entités et de relations qu'un modèle a produits
+en analysant un corpus, avec leur nombre d'occurrences. Ils sont redondants et
+incohérents : mêmes concepts sous des libellés différents, variantes de casse,
+types trop spécifiques vus une seule fois.
+
+Consolide-les en un schéma canonique de {n_types} types d'entités au maximum et
+{n_rel} types de relations au maximum. Règles impératives :
+- fusionne agressivement : synonymes, variantes de casse, hyperonymes. Deux types
+  qui désigneraient les mêmes objets dans un graphe DOIVENT être fusionnés
+  (Organisation et Institution, Evenement et Action, Document et Texte…).
+- écarte les types trop spécifiques pour structurer un graphe
+- libellés d'entités : CamelCase, en {langue}, **sans accent ni espace** (Evenement,
+  et non Événement)
+- libellés de relations : MAJUSCULES_AVEC_UNDERSCORES, **sans accent** (FAIT_PARTIE_DE)
+- pour chaque type, propose 0 à 3 propriétés utiles. N'utilise JAMAIS `name`, `nom`
+  ni `titre` : une propriété `name` est ajoutée d'office à chaque type.
+- propose des patterns (source, RELATION, cible) cohérents avec les types retenus
+
+TYPES D'ENTITÉS OBSERVÉS :
+{types}
+
+TYPES DE RELATIONS OBSERVÉS :
+{relations}
+
+Réponds en JSON strict :
+{{"node_types": {{"Type": ["propriete1", "propriete2"]}},
+  "relationship_types": ["RELATION_A", "RELATION_B"],
+  "patterns": [["TypeSource", "RELATION_A", "TypeCible"]]}}
+"""
+
+
+def decouper(fichiers: list[Path]) -> list[tuple[str, str]]:
+    """Découpe les documents avec le même découpeur que la pipeline d'ingestion,
+    pour que la découverte porte sur les chunks réellement extraits ensuite."""
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+    return [
+        (morceau, f.name)
+        for f in fichiers
+        for morceau in splitter.split_text(extraire_texte(f))
+    ]
+
+
+def tirer(chunks: list[tuple[str, str]], n: int, graine: int = 0) -> list[tuple[str, str]]:
+    """Échantillon réparti : proportionnel au poids de chaque document, et tiré
+    dans tout le document plutôt qu'en tête."""
+    par_doc: dict[str, list] = {}
+    for texte, doc in chunks:
+        par_doc.setdefault(doc, []).append(texte)
+    total = len(chunks) or 1
+    tirage = []
+    alea = random.Random(graine)
+    for doc, textes in par_doc.items():
+        k = max(1, round(n * len(textes) / total))
+        tirage += [(t, doc) for t in alea.sample(textes, min(k, len(textes)))]
+    return tirage[:n]
+
+
+def _json(reponse: str) -> dict:
+    try:
+        return json.loads(reponse[reponse.find("{") : reponse.rfind("}") + 1])
+    except (ValueError, json.JSONDecodeError):
+        return {}
+
+
+async def decouvrir_types(
+    chunks: list[tuple[str, str]], n: int = 20, parallele: int = 5, trace=print
+) -> tuple[Counter, Counter]:
+    """Passe 1 — extraction libre sur un échantillon, en parallèle."""
+    tirage = tirer(chunks, n)
+    trace(f"découverte : {len(tirage)} chunks échantillonnés sur {len(chunks)}")
+    modele = llm()
+    verrou = asyncio.Semaphore(parallele)
+
+    async def un(texte: str) -> dict:
+        async with verrou:
+            return _json((await modele.ainvoke(DECOUVERTE + texte[:900])).content)
+
+    resultats = await asyncio.gather(*(un(t) for t, _ in tirage), return_exceptions=True)
+
+    types, relations = Counter(), Counter()
+    for r in resultats:
+        if not isinstance(r, dict):
+            continue
+        types.update(e["type"] for e in r.get("entites", []) if e.get("type"))
+        relations.update(x["type"] for x in r.get("relations", []) if x.get("type"))
+    trace(f"découverte : {len(types)} types d'entités, {len(relations)} de relations")
+    return types, relations
+
+
+def normaliser_schema(schema: dict) -> dict:
+    """Applique en code ce que le prompt demande — un prompt n'est pas une garantie.
+
+    Les accents dans un label Neo4j obligent à des backticks partout et déroutent
+    la traduction texte→Cypher ; une propriété `nom` ferait doublon avec le `name`
+    ajouté d'office, sur lequel repose la résolution d'entités.
+    """
+    sans_accent = lambda s: "".join(
+        c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn"
+    )
+    interdites = {"name", "nom", "titre", "title", "label"}
+
+    noeuds, renommage = {}, {}
+    for label, props in (schema.get("node_types") or {}).items():
+        propre = re.sub(r"[^A-Za-z0-9]", "", sans_accent(str(label)))
+        if not propre:
+            continue
+        renommage[label] = propre
+        # Les noms de propriétés aussi : un accent impose des backticks en Cypher
+        # et déroute la traduction texte→Cypher.
+        noeuds[propre] = [
+            re.sub(r"[^A-Za-z0-9_]", "", sans_accent(str(p)))
+            for p in (props or [])
+            if str(p).lower() not in interdites
+        ][:3]
+        noeuds[propre] = [p for p in noeuds[propre] if p]
+
+    relations, ren_rel = [], {}
+    for r in schema.get("relationship_types") or []:
+        propre = re.sub(r"[^A-Z0-9_]", "", sans_accent(str(r)).upper().replace(" ", "_"))
+        if propre and propre not in relations:
+            relations.append(propre)
+        ren_rel[r] = propre
+
+    patterns = []
+    for p in schema.get("patterns") or []:
+        if len(p) != 3:
+            continue
+        s, r, c = renommage.get(p[0]), ren_rel.get(p[1]), renommage.get(p[2])
+        if s in noeuds and c in noeuds and r in relations:
+            patterns.append([s, r, c])
+
+    return {"node_types": noeuds, "relationship_types": relations, "patterns": patterns}
+
+
+async def consolider(
+    types: Counter, relations: Counter, n_types: int = 10, n_rel: int = 8,
+    langue: str = "français", trace=print,
+) -> dict:
+    """Passe 2 — fusionne les types bruts en un schéma canonique, en un appel."""
+    if not types:
+        return {"node_types": {}, "relationship_types": [], "patterns": []}
+    fmt = lambda c: "\n".join(f"- {k} ({v})" for k, v in c.most_common(80))
+    reponse = await llm().ainvoke(
+        CONSOLIDATION.format(
+            n_types=n_types, n_rel=n_rel, langue=langue,
+            types=fmt(types), relations=fmt(relations) or "- (aucune)",
+        )
+    )
+    schema = normaliser_schema(_json(reponse.content))
+    trace(
+        f"consolidation : {len(types)} types bruts -> {len(schema['node_types'])} canoniques"
+    )
+    return schema
+
+
+async def deriver_schema(
+    fichiers: list[Path], n: int = 20, langue: str = "français", trace=print
+) -> dict:
+    """Passes 1 et 2 enchaînées : des documents vers un schéma prêt à contraindre."""
+    chunks = decouper(fichiers)
+    types, relations = await decouvrir_types(chunks, n=n, trace=trace)
+    return await consolider(types, relations, langue=langue, trace=trace)
+
+
 def echantillonner(texte: str, budget: int, fenetres: int = 3) -> str:
     """Prélève plusieurs fenêtres réparties dans le document.
 
@@ -259,9 +450,8 @@ async def main() -> None:
         return
     print(f"{len(fichiers)} document(s) :", ", ".join(f.name for f in fichiers))
 
-    print("\nProposition d'un schéma d'extraction…")
-    propose = await proposer_schema(fichiers)
-    d = schema_en_dict(propose)
+    print("\nDérivation du schéma (passes 1 et 2)…")
+    d = await deriver_schema(fichiers, trace=lambda m: print("  " + m))
     print("  entités  :", ", ".join(d["node_types"]))
     print("  relations:", ", ".join(d["relationship_types"]))
 
