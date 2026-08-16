@@ -520,10 +520,23 @@ python test_parallel_efficiency.py  # Performance parallèle
 │   ├── main.py              # API principale
 │   └── requirements.txt     # Dépendances backend
 ├── streamlit_rag_simple.py  # Interface Streamlit
+├── demo_build_kg.py         # Démo : construction du graphe (neo4j-graphrag)
+├── demo_query.py            # Démo : vectoriel seul vs enrichi par le graphe
+├── PDFs/                    # Corpus de démo (référentiel de procédures)
 ├── requirements.txt         # Dépendances globales
 ├── .env.example            # Template configuration
 └── README.md               # Cette documentation
 ```
+
+### **Documentation**
+
+| Guide | Contenu |
+|-------|---------|
+| [DEMO-GRAPHRAG.md](./DEMO-GRAPHRAG.md) | 🧪 Démo autonome : graphe de connaissances sur un référentiel documentaire, mesures vectoriel vs graphe |
+| [QUICK-START.md](./QUICK-START.md) | 🚀 Déploiement Docker en 2 minutes |
+| [DOCKER.md](./DOCKER.md) | 🐳 Détails de la conteneurisation |
+| [TROUBLESHOOTING.md](./TROUBLESHOOTING.md) | 🔧 Dépannage |
+| [WINDOWS.md](./WINDOWS.md) | 🪟 Spécificités Windows |
 
 
 ## 🐛 Dépannage
