@@ -20,7 +20,7 @@ import demo_build_kg as kg
 # Le diagramme de la pipeline, affiché en préambule. Mermaid est embarqué dans le
 # paquet streamlit-mermaid : aucun appel réseau, il s'affiche hors connexion.
 PIPELINE = """
-flowchart LR
+flowchart TD
     A["1 · Upload PDF"] --> B["2 · Chunking"]
     B --> C["3 · Embeddings"]
     B --> D["4 · Extraction des entites<br/>un appel LLM par chunk"]
