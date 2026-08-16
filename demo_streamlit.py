@@ -14,7 +14,9 @@ import neo4j
 import pandas as pd
 import pypdf
 import streamlit as st
+import streamlit.components.v1 as components
 from dotenv import load_dotenv
+from neo4j_viz.neo4j import from_neo4j
 from neo4j_graphrag.embeddings import OpenAIEmbeddings
 from neo4j_graphrag.generation import GraphRAG
 from neo4j_graphrag.llm import OpenAILLM
@@ -52,6 +54,26 @@ def rags():
 def q(cypher: str, **params) -> list[dict]:
     with driver().session() as s:
         return s.run(cypher, **params).data()
+
+
+def graphe(cypher: str, hauteur: int = 560, **params) -> None:
+    """Rendu interactif via neo4j-viz (NVL, le moteur de Neo4j Bloom).
+
+    Le HTML produit embarque tout le bundle JS : ~6 Mo, mais aucun appel réseau —
+    la visualisation fonctionne même sans connexion pendant une présentation.
+    """
+    with driver().session() as s:
+        g = s.run(cypher, **params).graph()
+    if not g.nodes:
+        st.caption("Aucun résultat pour cette requête.")
+        return
+    vg = from_neo4j(g)
+    # L'ordre compte : colorer par type tant que la légende porte encore les labels,
+    # puis remplacer la légende par le nom métier.
+    vg.color_nodes(field="caption")
+    vg.set_node_captions(property="name")
+    components.html(vg.render(height=f"{hauteur}px").data, height=hauteur + 10)
+    st.caption(f"{len(vg.nodes)} nœuds · {len(vg.relationships)} relations — molette pour zoomer, clic pour déplacer")
 
 
 def lisible(contenu: str) -> str:
@@ -215,28 +237,34 @@ elif PAGE.startswith("2"):
     )
     st.dataframe(pd.DataFrame(plafonds), width="stretch", hide_index=True)
 
-    st.subheader("Voisinage d'une entité")
+    st.subheader("Le graphe, en vrai")
+    st.caption("Rendu par `neo4j-viz`, le binding Python de NVL — le moteur de Neo4j Bloom.")
+
+    vues = {
+        "Tout le graphe métier": (
+            "MATCH p=(a:__Entity__)-[r]->(b:__Entity__) RETURN p LIMIT 120", 620),
+        "Seuils et leurs zones": (
+            "MATCH p=(s:Seuil)-[:S_APPLIQUE_A]->(z:Zone) RETURN p LIMIT 40", 520),
+        "Qui approuve quoi": (
+            "MATCH p=(r:Role)-[:APPROUVE|DECLENCHE]-(s:Seuil) RETURN p LIMIT 60", 560),
+        "Couche lexicale (documents et chunks)": (
+            "MATCH p=(c:Chunk)-[:FROM_DOCUMENT]->(d:Document) RETURN p LIMIT 60", 560),
+    }
+    vue = st.radio("Vue", list(vues), horizontal=True)
+    cypher, hauteur = vues[vue]
+    with st.expander("Requête"):
+        st.code(cypher, language="cypher")
+    graphe(cypher, hauteur)
+
+    st.subheader("Voisinage d'un rôle")
     roles = [r["n"] for r in q("MATCH (n:Role) RETURN DISTINCT n.name AS n ORDER BY n")]
     if roles:
         choix = st.selectbox("Rôle", roles)
-        voisins = q(
-            "MATCH (r:Role {name:$n})-[rel]-(v) WHERE NOT v:Chunk AND NOT v:Document "
-            "RETURN type(rel) AS t, coalesce(v.name,'?') AS v, labels(v)[1] AS l, v.montant AS m "
-            "LIMIT 20",
+        graphe(
+            "MATCH p=(r:Role {name:$n})-[]-(v:__Entity__) RETURN p LIMIT 30",
+            480,
             n=choix,
         )
-        if voisins:
-            dot = ['digraph { rankdir=LR; bgcolor="transparent";',
-                   'node [shape=box style="rounded,filled" fontname="Helvetica" color="#888"];',
-                   f'"{choix}" [fillcolor="#fff3e0"];']
-            for v in voisins:
-                lab = v["v"] + (f"\\n{v['m']:g}" if v["m"] is not None else "")
-                dot.append(f'"{choix}" -> "{lab}" [label="{v["t"]}"];')
-                dot.append(f'"{lab}" [fillcolor="#f5f5f5"];')
-            dot.append("}")
-            st.graphviz_chart("\n".join(dot))
-        else:
-            st.caption("Aucune relation métier pour ce rôle.")
 
 # --------------------------------------------------------------------------- #
 # 3 · Comparaison
