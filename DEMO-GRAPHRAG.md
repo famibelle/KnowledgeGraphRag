@@ -27,24 +27,38 @@ OPTIONS {indexConfig: {`vector.dimensions`: 1536, `vector.similarity_function`: 
 
 | Étape | Ce qui se passe |
 |---|---|
-| **1 · Documents** | Dépôt de fichiers (`.pdf`, `.txt`, `.md`), listés avec leur état d'ingestion. Suppression du disque **et** du graphe. |
-| **2 · Schéma d'extraction** | Le LLM propose les types d'entités et de relations à partir d'un échantillon du corpus. **Le schéma est éditable en JSON.** |
-| **3 · Construction** | Découpage, embeddings, extraction d'entités. Ingestion incrémentale ou reconstruction complète. |
-| **4 · Graphe** | Volumétrie, vues interactives (`neo4j-viz`), voisinage d'une entité. |
-| **5 · Entités extraites** | L'inventaire de ce que le LLM a produit, avec le chunk source de chaque entité. |
-| **6 · Interroger** | Question en langage naturel → Cypher (`Text2CypherRetriever`) → résultat → réponse. La requête générée est affichée. |
+| **1 · Upload** | Dépôt de PDF (aussi `.txt`, `.md`). Un bouton enchaîne toute la construction. |
+| **2 · Chunking** | `RecursiveCharacterTextSplitter`, 1000 caractères, 100 de recouvrement. |
+| **3 · Embeddings** | `text-embedding-3-small`, 1536 dimensions, dans `Chunk.textEmbedding`. |
+| **4 · Extraction des entités** | Un appel LLM **par chunk**, en extraction **libre** : aucun schéma imposé. |
+| **5 · Consolidation des entités** | Fusion exacte sur nom normalisé → harmonisation des types → fusion approchée. |
+| **6 · Affichage du graphe** | Vues interactives `neo4j-viz`, inventaire des entités avec leur provenance. |
 
-## 🎯 Le point de conception
+Chaque chunk garde un lien `FROM_DOCUMENT` vers son document, chaque entité un lien
+`FROM_CHUNK` vers le chunk qui l'a produite.
 
-**Le schéma d'extraction est le principal levier de qualité.** En extraction libre, le
-modèle produit `Société` / `Entreprise` / `Organisation` pour la même chose et le graphe
-devient inexploitable — aucun chemin ne relie plus rien.
+## 🎯 Le point de conception : consolider après, pas contraindre avant
 
-L'étape 2 rend ce choix explicite : le schéma est proposé, puis **relu et corrigé** avant
-construction. C'est le geste qui sépare une démo qui marche d'une démo qui impressionne.
+Les documents n'étant pas connus a priori, aucun schéma ne peut être écrit à l'avance.
+L'extraction est donc **libre** — le modèle nomme et type ce qu'il trouve — et le
+nettoyage se fait après coup, sur les entités réellement produites.
 
-Une propriété `name` est ajoutée d'office à chaque type d'entité : le résolveur de la
-librairie ne compare que celle-là.
+Le problème que cela pose est mesurable : en extraction libre, le modèle invente ses
+types au fil des chunks. Mesuré sur ce corpus, **41 à 47 types distincts pour 12 chunks**,
+y compris à l'intérieur d'un seul document, avec les collisions habituelles
+(`organisation` / `Organisation` / `organisme`).
+
+La consolidation répond en trois étapes, dont **deux sont déterministes** :
+
+| Étape | Méthode | LLM |
+|---|---|---|
+| **a · Fusion exacte** | Regroupement sur le nom normalisé — minuscules, sans accent, sans ponctuation, sans article. Fusion par `apoc.refactor.mergeNodes`. | non |
+| **b · Harmonisation des types** | Un seul appel qui associe chaque étiquette observée à une étiquette canonique. | oui |
+| **c · Fusion approchée** | `rapidfuzz`, similarité de noms ≥ 92, à étiquette égale. | non |
+
+L'étape a fusionne « la Direction des Achats » et « DIRECTION DES ACHATS » — et, comme
+elle opère toutes étiquettes confondues, elle règle du même coup les doublons de type
+portant sur une même entité.
 
 ## ⚠️ Limites, mesurées et assumées
 
@@ -52,16 +66,17 @@ librairie ne compare que celle-là.
 corpus donnent des volumétries différentes (58 puis 61 entités sur un corpus de test).
 Les valeurs métier restent stables. Ne validez jamais une exécution sur un décompte.
 
-**La proposition de schéma est instable** — et sort tantôt en français, tantôt en
-anglais selon l'échantillon tiré. D'où l'édition manuelle.
-
 **La négation n'est pas gérée.** « Ce seuil est supprimé » produit quand même une entité
 pour ce seuil.
 
-**Le résolveur d'entités ne compare que `name`.** Il fusionne les mentions d'une même
-entité — utile — mais écrase aussi des nœuds distincts partageant un libellé générique.
-Sur un corpus de test, les quatre lignes d'un tableau de plafonds ont fusionné en une
-seule parce qu'elles s'appelaient toutes « Plafond par nuit ».
+**Le résolveur de la librairie est désactivé.** Il ne compare que `name` à étiquette
+égale, ce qui ne suffit pas quand l'extraction libre produit aussi des étiquettes
+divergentes. La consolidation le remplace.
+
+**La fusion peut être trop agressive.** Deux entités distinctes portant un libellé
+générique identique seront réunies. Sur un corpus de test, les quatre lignes d'un tableau
+de plafonds ont fusionné parce qu'elles s'appelaient toutes « Plafond par nuit ». Le
+seuil de similarité de l'étape c est réglable.
 
 **`Text2CypherRetriever` échoue parfois** : le LLM produit du Cypher que Neo4j refuse.
 L'interface le signale et propose d'écrire la requête à la main.
@@ -75,7 +90,6 @@ un résultat faux :
 |---|---|---|---|
 | `chunk_embedding_property` | `embedding` | `textEmbedding` | l'index `GrahRAG` reste vide, la recherche renvoie 0 résultat |
 | `text_splitter` | `FixedSizeSplitter(4000)` | `RecursiveCharacterTextSplitter(1000, 100)` | un chunk ≈ un document, et la coupe au caractère près tranche les tableaux |
-| propriété identifiante | — | doit s'appeler **`name`** | le résolveur tourne sans rien fusionner |
 | modèle d'embedding | `genai.vector.encode` utilise **ada-002** | préciser `text-embedding-3-small` | 1536 dimensions des deux côtés, donc aucune erreur — mais recherche entre deux espaces vectoriels : score max 0.509 au lieu de 0.768 |
 
 Autre divergence : `SimpleKGPipeline` écrit `(:Chunk)-[:FROM_DOCUMENT]->(:Document)`,
@@ -92,8 +106,8 @@ crée et y raccroche les chunks laissés orphelins.
 
 | Fichier | Rôle |
 |---|---|
-| `demo_build_kg.py` | La pipeline : extraction de texte, proposition de schéma, ingestion, retrait, purge |
-| `demo_streamlit.py` | L'interface en six étapes |
+| `demo_build_kg.py` | La pipeline : extraction de texte, ingestion, consolidation, retrait, purge |
+| `demo_streamlit.py` | L'interface : pipeline, upload et construction, graphe, interrogation |
 | `demo_query.py` | Comparaison RAG vectoriel / enrichi par le graphe, en ligne de commande |
 
 ---

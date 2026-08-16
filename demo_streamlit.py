@@ -21,36 +21,28 @@ import demo_build_kg as kg
 # paquet streamlit-mermaid : aucun appel réseau, il s'affiche hors connexion.
 PIPELINE = """
 flowchart TD
-    A["Documents deposes<br/>pdf · txt · md"] --> B["Extraction du texte"]
-    B --> F["Decoupage en chunks<br/>1000 car. / 100 de recouvrement"]
+    A["1 · Upload de PDF"] --> B["2 · Chunking<br/>1000 caracteres / 100 de recouvrement"]
+    B --> C["3 · Embeddings<br/>text-embedding-3-small"]
+    B --> D["4 · Extraction des entites<br/>un appel LLM par chunk, extraction LIBRE"]
 
-    F --> S1["PASSE 1 — Decouverte<br/>extraction LIBRE sur ~20 chunks<br/>echantillonnes dans tous les documents"]
-    S1 --> S1b["Types bruts observes<br/>~70 types, la plupart vus une fois"]
-    S1b --> S2["PASSE 2 — Consolidation<br/>un seul appel : fusion des synonymes"]
-    S2 --> S2b["Normalisation en code<br/>sans accent · relations en MAJUSCULES"]
-    S2b --> E["Schema canonique<br/>~10 types + relations"]
+    D --> E1["5a · Fusion exacte<br/>nom normalise : minuscules, sans accent, sans article"]
+    E1 --> E2["5b · Harmonisation des types<br/>un appel LLM"]
+    E2 --> E3["5c · Fusion approchee<br/>similarite de noms, rapidfuzz"]
 
-    F --> G["Embeddings<br/>text-embedding-3-small"]
-    F --> H["PASSE 3 — Extraction<br/>TOUS les chunks, un appel chacun"]
-    E -.->|contraint| H
-    H --> I["Resolution d'entites<br/>fusion sur la propriete name"]
+    C --> G[("Chunk<br/>+ textEmbedding")]
+    E3 --> H[("Entites<br/>+ relations")]
+    A --> I[("Document")]
+    H -.->|FROM_CHUNK| G
+    G -.->|FROM_DOCUMENT| I
 
-    G --> J[("Chunk<br/>+ textEmbedding")]
-    I --> K[("Entites typees<br/>+ relations")]
-    B --> L[("Document")]
-    K -.->|FROM_CHUNK| J
-    J -.->|FROM_DOCUMENT| L
-
-    K --> M["Text2Cypher<br/>question en langage naturel"]
-    M --> N["Cypher genere<br/>affiche a l'ecran"]
-    N --> O["Reponse ancree<br/>sur les lignes retournees"]
+    H --> J["6 · Affichage du graphe<br/>neo4j-viz"]
 
     classDef llm fill:#fff3e0,stroke:#e69138,color:#333
     classDef store fill:#e3f2fd,stroke:#4a86c8,color:#333
     classDef code fill:#e8f5e9,stroke:#5a9c5a,color:#333
-    class S1,S2,H,M llm
-    class J,K,L store
-    class S2b code
+    class D,E2 llm
+    class G,H,I store
+    class E1,E3 code
 """
 
 st.set_page_config(page_title="GraphRAG Builder", page_icon="🕸️", layout="wide")
@@ -138,10 +130,11 @@ PAGE = st.sidebar.radio(
     ],
 )
 
-if "schema" in st.session_state:
+if st.session_state.get("consolidation"):
+    c = st.session_state["consolidation"]
     st.sidebar.info(
-        f"Schéma défini : {len(st.session_state['schema']['node_types'])} types "
-        f"d'entités, {len(st.session_state['schema']['relationship_types'])} relations"
+        f"Consolidation : {c['exactes'] + c['approchees']} entités fusionnées, "
+        f"{c['types_avant']} → {c['types_apres']} types"
     )
 
 # --------------------------------------------------------------------------- #
@@ -150,18 +143,18 @@ if "schema" in st.session_state:
 if PAGE.startswith("0"):
     st.title("La pipeline, de bout en bout")
     st.markdown(
-        "Des documents inconnus a priori vers un graphe de connaissances interrogeable, "
-        "**sans intervention humaine**. Les appels au LLM sont en orange, la "
-        "normalisation déterministe en vert."
+        "Des PDF vers un graphe de connaissances, **sans intervention humaine et sans "
+        "connaissance préalable des documents**. Les appels au LLM sont en orange, les "
+        "étapes déterministes en vert."
     )
     st_mermaid(PIPELINE, height="860px")
 
     c1, c2, c3 = st.columns(3)
     c1.markdown(
-        "#### Pourquoi trois passes\n"
-        "En extraction libre, le modèle invente ses types au fil des chunks. Mesuré ici : "
-        "**41 à 47 types distincts pour 12 chunks**, y compris à l'intérieur d'un seul "
-        "document. La passe 2 les ramène à une dizaine."
+        "#### Extraction libre, nettoyage après\n"
+        "Aucun schéma imposé : le modèle nomme et type ce qu'il trouve. Mesuré ici, il "
+        "produit **41 à 47 types distincts pour 12 chunks**, même à l'intérieur d'un seul "
+        "document. La consolidation les ramène ensuite à une dizaine."
     )
     c2.markdown(
         "#### La provenance\n"
@@ -213,25 +206,23 @@ elif PAGE.startswith("1"):
             etapes = st.status("Construction du graphe", expanded=True)
             journal = etapes.empty()
             try:
-                etapes.write("**Passes 1 et 2** — dérivation du schéma")
-                chunks = kg.decouper(cibles)
-                bruts, rel = asyncio.run(
-                    kg.decouvrir_types(chunks, n=20, trace=lambda m: journal.caption(m))
-                )
-                schema = asyncio.run(
-                    kg.consolider(bruts, rel, trace=lambda m: journal.caption(m))
-                )
-                st.session_state["schema"] = schema
-                st.session_state["bruts"] = bruts.most_common()
-                etapes.write(
-                    f"↳ {len(bruts)} types bruts → **{len(schema['node_types'])} canoniques** : "
-                    + ", ".join(f"`{t}`" for t in schema["node_types"])
-                )
-
-                etapes.write(f"**Passe 3** — extraction sur {len(chunks)} chunks")
+                etapes.write("**Découpage, embeddings et extraction des entités**")
                 n = asyncio.run(
-                    kg.ingerer(cibles, driver(), kg.dict_en_schema(schema),
-                               trace=lambda m: journal.caption(m))
+                    kg.ingerer(cibles, driver(), trace=lambda m: journal.caption(m))
+                )
+                avant = q("MATCH (e:__Entity__) RETURN count(e) AS n")[0]["n"]
+                etapes.write(f"↳ {n} chunks · **{avant} entités** extraites")
+
+                etapes.write("**Consolidation des entités**")
+                stats = kg.consolider_entites(
+                    driver(), trace=lambda m: journal.caption(m)
+                )
+                st.session_state["consolidation"] = stats
+                apres = q("MATCH (e:__Entity__) RETURN count(e) AS n")[0]["n"]
+                etapes.write(
+                    f"↳ {avant} → **{apres} entités** "
+                    f"({stats['exactes']} fusions exactes, {stats['approchees']} approchées) · "
+                    f"{stats['types_avant']} → **{stats['types_apres']} types**"
                 )
                 etapes.update(label="Graphe construit", state="complete", expanded=False)
             except Exception as exc:
@@ -240,9 +231,8 @@ elif PAGE.startswith("1"):
                 st.stop()
 
             st.success(
-                f"{len(cibles)} document(s) · {n} chunks · "
-                f"{len(schema['node_types'])} types d'entités. "
-                "Voir l'étape 4 pour le graphe."
+                f"{len(cibles)} document(s) · {n} chunks · {apres} entités · "
+                f"{stats['types_apres']} types. Voir l'étape 2 pour le graphe."
             )
             rafraichir()
 
@@ -253,8 +243,8 @@ elif PAGE.startswith("1"):
             st.success(f"{len(envois)} fichier(s) enregistré(s), sans construction.")
             rafraichir()
         st.caption(
-            "« Déposer et construire » enchaîne tout : dérivation du schéma puis "
-            "extraction. Comptez ~30 s pour le schéma et ~30 s par document."
+            "« Déposer et construire » enchaîne tout : découpage, embeddings, "
+            "extraction des entités et consolidation. Comptez ~30 s par document."
         )
 
     st.subheader("Corpus")

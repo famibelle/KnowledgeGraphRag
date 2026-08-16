@@ -1,15 +1,15 @@
-"""Pipeline GraphRAG générique : des documents déposés par l'utilisateur vers un graphe.
+"""Pipeline GraphRAG : des PDF déposés par l'utilisateur vers un graphe.
 
-Étapes : extraction du texte → proposition d'un schéma d'extraction → découpage,
-embeddings et extraction d'entités via `neo4j-graphrag` → projection de compatibilité.
+Découpage → embeddings → extraction libre des entités par chunk → consolidation
+des entités → graphe. Chaque chunk garde un lien vers son document, chaque entité
+vers le chunk dont elle provient.
 
-En ligne de commande, ingère tout le dossier `PDFs/` avec un schéma inféré :
+En ligne de commande, traite tout le dossier `PDFs/` :
     .venv/bin/python demo_build_kg.py
 """
 import asyncio
 import json
 import os
-import random
 import re
 import unicodedata
 from collections import Counter
@@ -21,13 +21,10 @@ from dotenv import load_dotenv
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from neo4j_graphrag.embeddings import OpenAIEmbeddings
 from neo4j_graphrag.experimental.components.lexical_graph import LexicalGraphConfig
-from neo4j_graphrag.experimental.components.schema import (
-    GraphSchema,
-    SchemaFromTextExtractor,
-)
 from neo4j_graphrag.experimental.components.text_splitters.langchain import (
     LangChainTextSplitterAdapter,
 )
+from rapidfuzz import fuzz
 from neo4j_graphrag.experimental.pipeline.kg_builder import SimpleKGPipeline
 from neo4j_graphrag.llm import OpenAILLM
 
@@ -77,85 +74,26 @@ def extraire_texte(chemin: Path) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Schéma d'extraction
+# Consolidation des entités
 # --------------------------------------------------------------------------- #
-# --------------------------------------------------------------------------- #
-# Dérivation automatique du schéma, en trois passes
-# --------------------------------------------------------------------------- #
-# Passe 1 : extraction LIBRE sur un échantillon de chunks — on observe ce que le
-#           modèle produit réellement, au lieu de le deviner depuis du texte brut.
-# Passe 2 : consolidation des types bruts en un jeu canonique, par un seul appel.
-# Passe 3 : extraction sur TOUS les chunks, contrainte par ce schéma (voir ingerer).
-#
-# Sans la passe 2, l'extraction libre produit un type par entité ou presque :
-# mesuré sur 12 chunks d'un corpus réel, 55 types distincts dont 48 vus une seule
-# fois, avec les collisions habituelles (organisation / Organisation / organisme).
+# L'extraction est libre : le modèle nomme et type ce qu'il trouve, sans liste
+# imposée. Le nettoyage se fait donc APRÈS, sur les entités produites, en trois
+# étapes dont deux sont déterministes.
 
-DECOUVERTE = """Extrais les entités et les relations de ce texte.
-Choisis toi-même les types qui te paraissent pertinents, sans liste imposée.
+HARMONISATION = """Voici les types d'entités produits par une extraction libre sur un
+corpus, avec leur nombre d'occurrences. Ils sont redondants : synonymes, variantes de
+casse, granularités mélangées.
 
-Réponds en JSON strict :
-{"entites": [{"nom": "...", "type": "..."}],
- "relations": [{"source": "...", "type": "...", "cible": "..."}]}
+Associe chaque type à un type canonique, en visant {cible} types au total.
+Règles : libellés en CamelCase sans accent ni espace ; fusionne les synonymes et les
+variantes de casse ; ne laisse aucun type sans correspondance.
 
-TEXTE :
-"""
-
-CONSOLIDATION = """Voici les types d'entités et de relations qu'un modèle a produits
-en analysant un corpus, avec leur nombre d'occurrences. Ils sont redondants et
-incohérents : mêmes concepts sous des libellés différents, variantes de casse,
-types trop spécifiques vus une seule fois.
-
-Consolide-les en un schéma canonique de {n_types} types d'entités au maximum et
-{n_rel} types de relations au maximum. Règles impératives :
-- fusionne agressivement : synonymes, variantes de casse, hyperonymes. Deux types
-  qui désigneraient les mêmes objets dans un graphe DOIVENT être fusionnés
-  (Organisation et Institution, Evenement et Action, Document et Texte…).
-- écarte les types trop spécifiques pour structurer un graphe
-- libellés d'entités : CamelCase, en {langue}, **sans accent ni espace** (Evenement,
-  et non Événement)
-- libellés de relations : MAJUSCULES_AVEC_UNDERSCORES, **sans accent** (FAIT_PARTIE_DE)
-- pour chaque type, propose 0 à 3 propriétés utiles. N'utilise JAMAIS `name`, `nom`
-  ni `titre` : une propriété `name` est ajoutée d'office à chaque type.
-- propose des patterns (source, RELATION, cible) cohérents avec les types retenus
-
-TYPES D'ENTITÉS OBSERVÉS :
+TYPES OBSERVÉS :
 {types}
 
-TYPES DE RELATIONS OBSERVÉS :
-{relations}
-
-Réponds en JSON strict :
-{{"node_types": {{"Type": ["propriete1", "propriete2"]}},
-  "relationship_types": ["RELATION_A", "RELATION_B"],
-  "patterns": [["TypeSource", "RELATION_A", "TypeCible"]]}}
+Réponds en JSON strict, en associant CHAQUE type observé à son canonique :
+{{"correspondances": {{"type observé": "TypeCanonique"}}}}
 """
-
-
-def decouper(fichiers: list[Path]) -> list[tuple[str, str]]:
-    """Découpe les documents avec le même découpeur que la pipeline d'ingestion,
-    pour que la découverte porte sur les chunks réellement extraits ensuite."""
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
-    return [
-        (morceau, f.name)
-        for f in fichiers
-        for morceau in splitter.split_text(extraire_texte(f))
-    ]
-
-
-def tirer(chunks: list[tuple[str, str]], n: int, graine: int = 0) -> list[tuple[str, str]]:
-    """Échantillon réparti : proportionnel au poids de chaque document, et tiré
-    dans tout le document plutôt qu'en tête."""
-    par_doc: dict[str, list] = {}
-    for texte, doc in chunks:
-        par_doc.setdefault(doc, []).append(texte)
-    total = len(chunks) or 1
-    tirage = []
-    alea = random.Random(graine)
-    for doc, textes in par_doc.items():
-        k = max(1, round(n * len(textes) / total))
-        tirage += [(t, doc) for t in alea.sample(textes, min(k, len(textes)))]
-    return tirage[:n]
 
 
 def _json(reponse: str) -> dict:
@@ -165,167 +103,170 @@ def _json(reponse: str) -> dict:
         return {}
 
 
-async def decouvrir_types(
-    chunks: list[tuple[str, str]], n: int = 20, parallele: int = 5, trace=print
-) -> tuple[Counter, Counter]:
-    """Passe 1 — extraction libre sur un échantillon, en parallèle."""
-    tirage = tirer(chunks, n)
-    trace(f"découverte : {len(tirage)} chunks échantillonnés sur {len(chunks)}")
-    modele = llm()
-    verrou = asyncio.Semaphore(parallele)
-
-    async def un(texte: str) -> dict:
-        async with verrou:
-            return _json((await modele.ainvoke(DECOUVERTE + texte[:900])).content)
-
-    resultats = await asyncio.gather(*(un(t) for t, _ in tirage), return_exceptions=True)
-
-    types, relations = Counter(), Counter()
-    for r in resultats:
-        if not isinstance(r, dict):
-            continue
-        types.update(e["type"] for e in r.get("entites", []) if e.get("type"))
-        relations.update(x["type"] for x in r.get("relations", []) if x.get("type"))
-    trace(f"découverte : {len(types)} types d'entités, {len(relations)} de relations")
-    return types, relations
+def cle_nom(nom: str) -> str:
+    """Clé de regroupement : minuscules, sans accent, sans ponctuation, sans article."""
+    s = unicodedata.normalize("NFD", str(nom).lower())
+    s = "".join(c for c in s if unicodedata.category(c) != "Mn")
+    s = re.sub(r"^(le |la |les |l'|un |une |des |the |a )", "", s)
+    return re.sub(r"[^a-z0-9]+", " ", s).strip()
 
 
-def normaliser_schema(schema: dict) -> dict:
-    """Applique en code ce que le prompt demande — un prompt n'est pas une garantie.
+# En extraction libre, le modèle choisit aussi ses noms de propriétés : sur un corpus
+# de test, 169 entités portaient `name`, 128 `title`, et certaines aucun identifiant.
+# Sans cette étape, la moitié des entités échappe à la consolidation et s'affiche sans
+# étiquette dans le graphe.
+CANDIDATS_NOM = ("name", "title", "titre", "nom", "label", "libelle", "id")
 
-    Les accents dans un label Neo4j obligent à des backticks partout et déroutent
-    la traduction texte→Cypher ; une propriété `nom` ferait doublon avec le `name`
-    ajouté d'office, sur lequel repose la résolution d'entités.
+
+def nommer_entites(driver: neo4j.Driver, trace=print) -> dict:
+    """Étape 0 — garantit que chaque entité porte un `name` exploitable.
+
+    Reprend le premier identifiant disponible ; à défaut, la plus longue valeur
+    textuelle. Les entités sans aucune identité sont supprimées : elles ne
+    désignent rien et ne peuvent ni être fusionnées ni être affichées.
     """
-    sans_accent = lambda s: "".join(
-        c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn"
-    )
-    interdites = {"name", "nom", "titre", "title", "label"}
-
-    noeuds, renommage = {}, {}
-    for label, props in (schema.get("node_types") or {}).items():
-        propre = re.sub(r"[^A-Za-z0-9]", "", sans_accent(str(label)))
-        if not propre:
-            continue
-        renommage[label] = propre
-        # Les noms de propriétés aussi : un accent impose des backticks en Cypher
-        # et déroute la traduction texte→Cypher.
-        noeuds[propre] = [
-            re.sub(r"[^A-Za-z0-9_]", "", sans_accent(str(p)))
-            for p in (props or [])
-            if str(p).lower() not in interdites
-        ][:3]
-        noeuds[propre] = [p for p in noeuds[propre] if p]
-
-    relations, ren_rel = [], {}
-    for r in schema.get("relationship_types") or []:
-        propre = re.sub(r"[^A-Z0-9_]", "", sans_accent(str(r)).upper().replace(" ", "_"))
-        if propre and propre not in relations:
-            relations.append(propre)
-        ren_rel[r] = propre
-
-    patterns = []
-    for p in schema.get("patterns") or []:
-        if len(p) != 3:
-            continue
-        s, r, c = renommage.get(p[0]), ren_rel.get(p[1]), renommage.get(p[2])
-        if s in noeuds and c in noeuds and r in relations:
-            patterns.append([s, r, c])
-
-    return {"node_types": noeuds, "relationship_types": relations, "patterns": patterns}
+    inutiles = {"", "unknown", "n/a", "none", "null", "inconnu"}
+    renommees = supprimees = 0
+    with driver.session(database=base()) as s:
+        lignes = s.run(
+            "MATCH (e:__Entity__) WHERE e.name IS NULL OR trim(e.name) = '' "
+            "RETURN elementId(e) AS id, properties(e) AS p"
+        ).data()
+        for l in lignes:
+            props = l["p"] or {}
+            valeurs = [
+                str(props[k]) for k in CANDIDATS_NOM
+                if isinstance(props.get(k), str) and str(props[k]).strip().lower() not in inutiles
+            ]
+            if not valeurs:  # à défaut, la plus longue chaîne utile
+                valeurs = sorted(
+                    (v for v in props.values()
+                     if isinstance(v, str) and v.strip().lower() not in inutiles),
+                    key=len, reverse=True,
+                )
+            if valeurs:
+                s.run("MATCH (e) WHERE elementId(e) = $id SET e.name = $n",
+                      id=l["id"], n=valeurs[0][:120])
+                renommees += 1
+            else:
+                s.run("MATCH (e) WHERE elementId(e) = $id DETACH DELETE e", id=l["id"])
+                supprimees += 1
+    trace(f"0 · nommage : {renommees} entité(s) renommée(s), {supprimees} sans identité supprimée(s)")
+    return {"renommees": renommees, "supprimees": supprimees}
 
 
-async def consolider(
-    types: Counter, relations: Counter, n_types: int = 10, n_rel: int = 8,
-    langue: str = "français", trace=print,
+def _fusionner(session, groupes: list[list[str]]) -> int:
+    """Fusionne des groupes de nœuds via APOC, en gardant le nom le plus complet."""
+    fusions = 0
+    for ids in groupes:
+        session.run(
+            "MATCH (e) WHERE elementId(e) IN $ids "
+            "WITH e ORDER BY size(coalesce(e.name, '')) DESC "
+            "WITH collect(e) AS noeuds "
+            "CALL apoc.refactor.mergeNodes(noeuds, "
+            "  {properties: 'discard', mergeRels: true}) YIELD node "
+            "RETURN node",
+            ids=ids,
+        ).consume()
+        fusions += len(ids) - 1
+    return fusions
+
+
+def consolider_entites(
+    driver: neo4j.Driver, seuil_flou: int = 92, cible_types: int = 10, trace=print
 ) -> dict:
-    """Passe 2 — fusionne les types bruts en un schéma canonique, en un appel."""
-    if not types:
-        return {"node_types": {}, "relationship_types": [], "patterns": []}
-    fmt = lambda c: "\n".join(f"- {k} ({v})" for k, v in c.most_common(80))
-    reponse = await llm().ainvoke(
-        CONSOLIDATION.format(
-            n_types=n_types, n_rel=n_rel, langue=langue,
-            types=fmt(types), relations=fmt(relations) or "- (aucune)",
-        )
-    )
-    schema = normaliser_schema(_json(reponse.content))
-    trace(
-        f"consolidation : {len(types)} types bruts -> {len(schema['node_types'])} canoniques"
-    )
-    return schema
+    """Trois étapes, dont une seule fait appel au LLM.
 
-
-async def deriver_schema(
-    fichiers: list[Path], n: int = 20, langue: str = "français", trace=print
-) -> dict:
-    """Passes 1 et 2 enchaînées : des documents vers un schéma prêt à contraindre."""
-    chunks = decouper(fichiers)
-    types, relations = await decouvrir_types(chunks, n=n, trace=trace)
-    return await consolider(types, relations, langue=langue, trace=trace)
-
-
-def echantillonner(texte: str, budget: int, fenetres: int = 3) -> str:
-    """Prélève plusieurs fenêtres réparties dans le document.
-
-    Prendre uniquement le début est trompeur : sur un texte long, les premiers
-    milliers de caractères sont la page de titre et le sommaire, jamais le fond.
+    A — fusion exacte sur le nom normalisé, toutes étiquettes confondues : c'est ce
+        qui réunit « la Direction des Achats » et « DIRECTION DES ACHATS », et du
+        même coup les doublons de type portant sur la même entité.
+    B — harmonisation des étiquettes en un jeu canonique (un appel LLM).
+    C — fusion approchée entre entités de même étiquette, sur similarité de nom.
     """
-    if len(texte) <= budget:
-        return texte
-    taille = budget // fenetres
-    positions = [int(len(texte) * p) for p in (0.05, 0.45, 0.80)][:fenetres]
-    return "\n[…]\n".join(texte[p : p + taille] for p in positions)
+    stats = {"exactes": 0, "types_avant": 0, "types_apres": 0, "approchees": 0}
+    stats.update(nommer_entites(driver, trace=trace))
 
+    with driver.session(database=base()) as s:
+        # --- A : fusion exacte ------------------------------------------------ #
+        lignes = s.run(
+            "MATCH (e:__Entity__) WHERE e.name IS NOT NULL "
+            "RETURN elementId(e) AS id, e.name AS nom"
+        ).data()
+        groupes: dict[str, list[str]] = {}
+        for l in lignes:
+            groupes.setdefault(cle_nom(l["nom"]), []).append(l["id"])
+        doublons = [ids for ids in groupes.values() if len(ids) > 1]
+        stats["exactes"] = _fusionner(s, doublons)
+        trace(f"A · fusion exacte : {stats['exactes']} entité(s) fusionnée(s)")
 
-async def proposer_schema(fichiers: list[Path], echantillon: int = 12000) -> GraphSchema:
-    """Fait proposer par le LLM les types d'entités et de relations du corpus.
-
-    C'est le point de qualité de toute la pipeline : en extraction libre, le modèle
-    produit des types incohérents d'un chunk à l'autre. Le schéma proposé ici est
-    destiné à être relu et corrigé avant construction.
-
-    Le budget est réparti au prorata de la taille des documents, pour qu'un texte
-    long ne soit pas réduit au même extrait qu'une note de deux pages.
-    """
-    textes = {f: extraire_texte(f) for f in fichiers}
-    total = sum(len(t) for t in textes.values()) or 1
-    morceaux = []
-    for f, t in textes.items():
-        part = max(int(echantillon * len(t) / total), echantillon // (4 * len(fichiers)))
-        morceaux.append(f"--- {f.name} ---\n{echantillonner(t, part)}")
-    return await SchemaFromTextExtractor(llm=llm()).run(text="\n\n".join(morceaux)[:echantillon * 2])
-
-
-def schema_en_dict(schema: GraphSchema) -> dict:
-    """Forme éditable : {"Type": [propriétés]} et liste de relations."""
-    return {
-        "node_types": {
-            n.label: [p.name for p in n.properties] for n in schema.node_types
-        },
-        "relationship_types": [r.label for r in schema.relationship_types],
-        "patterns": [list(p) for p in schema.patterns],
-    }
-
-
-def dict_en_schema(d: dict) -> dict:
-    """Reconstruit le dict attendu par SimpleKGPipeline depuis la forme éditable."""
-    return {
-        "node_types": [
+    # --- B : harmonisation des étiquettes ------------------------------------- #
+    with driver.session(database=base()) as s:
+        etiquettes = Counter(
             {
-                "label": label,
-                "properties": [{"name": "name", "type": "STRING"}]
-                + [
-                    {"name": p, "type": "STRING"}
-                    for p in props
-                    if p != "name"
-                ],
+                r["l"]: r["n"]
+                for r in s.run(
+                    "MATCH (n:__Entity__) UNWIND labels(n) AS l "
+                    "WITH l WHERE NOT l STARTS WITH '__' "
+                    "RETURN l AS l, count(*) AS n ORDER BY n DESC"
+                )
             }
-            for label, props in d["node_types"].items()
-        ],
-        "relationship_types": [{"label": r} for r in d["relationship_types"]],
-        "patterns": [tuple(p) for p in d.get("patterns", []) if len(p) == 3],
-    }
+        )
+    stats["types_avant"] = len(etiquettes)
+    if len(etiquettes) > cible_types:
+        reponse = llm().invoke(
+            HARMONISATION.format(
+                cible=cible_types,
+                types="\n".join(f"- {k} ({v})" for k, v in etiquettes.most_common(120)),
+            )
+        )
+        corr = _json(reponse.content).get("correspondances", {})
+        propre = lambda s_: re.sub(
+            r"[^A-Za-z0-9]", "",
+            "".join(c for c in unicodedata.normalize("NFD", str(s_))
+                    if unicodedata.category(c) != "Mn"),
+        )
+        with driver.session(database=base()) as s:
+            for ancien, neuf in corr.items():
+                neuf = propre(neuf)
+                if not neuf or ancien not in etiquettes or neuf == ancien:
+                    continue
+                s.run(
+                    f"MATCH (e:`{ancien}`) REMOVE e:`{ancien}` SET e:`{neuf}`"
+                ).consume()
+
+    with driver.session(database=base()) as s:
+        stats["types_apres"] = s.run(
+            "MATCH (n:__Entity__) UNWIND labels(n) AS l "
+            "WITH l WHERE NOT l STARTS WITH '__' RETURN count(DISTINCT l) AS n"
+        ).single()["n"]
+    trace(f"B · étiquettes : {stats['types_avant']} -> {stats['types_apres']}")
+
+    # --- C : fusion approchée, à étiquette égale ------------------------------ #
+    with driver.session(database=base()) as s:
+        lignes = s.run(
+            "MATCH (e:__Entity__) WHERE e.name IS NOT NULL "
+            "RETURN elementId(e) AS id, e.name AS nom, "
+            "[l IN labels(e) WHERE NOT l STARTS WITH '__'][0] AS type"
+        ).data()
+        par_type: dict[str, list] = {}
+        for l in lignes:
+            par_type.setdefault(l["type"], []).append(l)
+
+        groupes = []
+        for entites in par_type.values():
+            restants = list(entites)
+            while restants:
+                pivot = restants.pop(0)
+                proches = [
+                    e for e in restants
+                    if fuzz.token_sort_ratio(pivot["nom"], e["nom"]) >= seuil_flou
+                ]
+                if proches:
+                    groupes.append([pivot["id"]] + [e["id"] for e in proches])
+                    restants = [e for e in restants if e not in proches]
+        stats["approchees"] = _fusionner(s, groupes)
+    trace(f"C · fusion approchée : {stats['approchees']} entité(s) fusionnée(s)")
+    return stats
 
 
 # --------------------------------------------------------------------------- #
@@ -363,14 +304,13 @@ RETURN count(c) AS rattachés
 """
 
 
-def construire_pipeline(
-    driver: neo4j.Driver, schema: dict, depuis_pdf: bool = True
-) -> SimpleKGPipeline:
+def construire_pipeline(driver: neo4j.Driver, depuis_pdf: bool = True) -> SimpleKGPipeline:
     return SimpleKGPipeline(
         llm=llm(),
         driver=driver,
         embedder=OpenAIEmbeddings(model=MODELE_EMBEDDING),
-        schema=schema,
+        # Extraction LIBRE : aucun schéma imposé, le modèle nomme et type ce qu'il
+        # trouve. Le nettoyage a lieu après, dans consolider_entites().
         from_pdf=depuis_pdf,
         # Le défaut (FixedSizeSplitter, 4000 car.) découpe au caractère près, en
         # plein milieu des tableaux. Le découpeur récursif respecte les sauts de ligne.
@@ -380,26 +320,24 @@ def construire_pipeline(
         # L'index vectoriel `GrahRAG` porte sur Chunk.textEmbedding ; le défaut de
         # la librairie est `embedding`, l'index resterait vide.
         lexical_graph_config=LexicalGraphConfig(chunk_embedding_property="textEmbedding"),
-        # Le résolveur ne compare que la propriété `name`. Il fusionne les mentions
-        # d'une même entité — utile ici, dangereux si deux nœuds distincts partagent
-        # un libellé générique (deux lignes d'un même tableau, par exemple).
-        perform_entity_resolution=True,
+        # Le résolveur de la librairie ne compare que `name`, à étiquette égale.
+        # Trop faible ici, puisque l'extraction libre produit aussi des étiquettes
+        # divergentes : la consolidation est faite après, par consolider_entites().
+        perform_entity_resolution=False,
         neo4j_database=base(),
     )
 
 
-async def ingerer(
-    fichiers: list[Path], driver: neo4j.Driver, schema: dict, trace=print
-) -> int:
-    """Ingère des documents dans le graphe existant. Incrémental : n'efface rien."""
-    pdf = construire_pipeline(driver, schema, depuis_pdf=True)
+async def ingerer(fichiers: list[Path], driver: neo4j.Driver, trace=print) -> int:
+    """Découpage, embeddings et extraction des entités. Incrémental : n'efface rien."""
+    pdf = construire_pipeline(driver, depuis_pdf=True)
     txt = None
     for f in fichiers:
         trace(f"ingestion : {f.name}")
         if f.suffix.lower() == ".pdf":
             await pdf.run_async(file_path=str(f))
         else:
-            txt = txt or construire_pipeline(driver, schema, depuis_pdf=False)
+            txt = txt or construire_pipeline(driver, depuis_pdf=False)
             await txt.run_async(text=extraire_texte(f))
             with driver.session(database=base()) as s:
                 s.run(RATTACHER, filename=f.name, path=str(f))
@@ -450,15 +388,15 @@ async def main() -> None:
         return
     print(f"{len(fichiers)} document(s) :", ", ".join(f.name for f in fichiers))
 
-    print("\nDérivation du schéma (passes 1 et 2)…")
-    d = await deriver_schema(fichiers, trace=lambda m: print("  " + m))
-    print("  entités  :", ", ".join(d["node_types"]))
-    print("  relations:", ", ".join(d["relationship_types"]))
-
     driver = connexion()
-    print()
-    n = await ingerer(fichiers, driver, dict_en_schema(d))
-    print(f"\n{n} chunks projetés (filename + CONTAINS_CHUNK)")
+
+    print("\nDécoupage, embeddings et extraction des entités…")
+    n = await ingerer(fichiers, driver, trace=lambda m: print("  " + m))
+    print(f"  {n} chunks")
+
+    print("\nConsolidation des entités…")
+    stats = consolider_entites(driver, trace=lambda m: print("  " + m))
+    print(f"  {stats}")
 
     with driver.session(database=base()) as s:
         print("\n--- graphe obtenu ---")
