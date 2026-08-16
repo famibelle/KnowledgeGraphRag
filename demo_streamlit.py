@@ -97,7 +97,7 @@ def graphe(cypher: str, hauteur: int = 560, **params) -> None:
 def etat_graphe() -> dict:
     try:
         return q(
-            "OPTIONAL MATCH (d:Document) WITH count(d) AS docs "
+            "OPTIONAL MATCH (d:SourceDocument) WITH count(d) AS docs "
             "OPTIONAL MATCH (c:Chunk) WITH docs, count(c) AS chunks "
             "OPTIONAL MATCH (e:__Entity__) RETURN docs, chunks, count(e) AS entites"
         )[0]
@@ -252,7 +252,7 @@ elif PAGE.startswith("1"):
     if not fichiers:
         st.info("Aucun document. Déposez des fichiers ci-dessus.")
     else:
-        dans_graphe = {r["f"] for r in q("MATCH (d:Document) RETURN d.filename AS f")}
+        dans_graphe = {r["f"] for r in q("MATCH (d:SourceDocument) RETURN d.filename AS f")}
         for f in fichiers:
             c1, c2, c3, c4 = st.columns([6, 2, 2, 2])
             c1.write(f"📄 {f.name}")
@@ -297,7 +297,7 @@ elif PAGE.startswith("2"):
     st.subheader("Vue interactive")
     vues = {
         "Graphe métier": ("MATCH p=(a:__Entity__)-[r]->(b:__Entity__) RETURN p LIMIT 150", 620),
-        "Couche lexicale": ("MATCH p=(c:Chunk)-[:FROM_DOCUMENT]->(d:Document) RETURN p LIMIT 80", 560),
+        "Couche lexicale": ("MATCH p=(c:Chunk)-[:FROM_DOCUMENT]->(d:SourceDocument) RETURN p LIMIT 80", 560),
         "Tout": ("MATCH p=()-[r]->() RETURN p LIMIT 300", 640),
     }
     vue = st.radio("Vue", list(vues), horizontal=True)
@@ -330,7 +330,7 @@ elif PAGE.startswith("2"):
         q(
             """
             MATCH (e:__Entity__)
-            OPTIONAL MATCH (e)-[:FROM_CHUNK]->(c:Chunk)-[:FROM_DOCUMENT]->(doc:Document)
+            OPTIONAL MATCH (e)-[:FROM_CHUNK]->(c:Chunk)-[:FROM_DOCUMENT]->(doc:SourceDocument)
             RETURN [l IN labels(e) WHERE NOT l STARTS WITH '__'][0] AS Type,
                    e.name AS Nom,
                    collect(DISTINCT doc.filename)[0] AS Source,

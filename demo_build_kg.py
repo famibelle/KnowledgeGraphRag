@@ -272,12 +272,12 @@ def consolider_entites(
 # --------------------------------------------------------------------------- #
 # Construction du graphe
 # --------------------------------------------------------------------------- #
-# SimpleKGPipeline écrit (:Chunk)-[:FROM_DOCUMENT]->(:Document) avec `path` et `index`.
+# SimpleKGPipeline écrit (:Chunk)-[:FROM_DOCUMENT]->(:SourceDocument) avec `path`.
 # L'API et l'interface Streamlit du projet sont indexées sur `filename` et sur
-# (:Document)-[:CONTAINS_CHUNK]->(:Chunk). Sans cette projection, le graphe est
+# (:Document)-[:CONTAINS_CHUNK]->(:Chunk). Sans projection, le graphe est
 # invisible pour elles : toutes les requêtes renvoient du vide, sans erreur.
 COMPAT = """
-MATCH (d:Document)
+MATCH (d:SourceDocument)
 SET d.filename = coalesce(d.filename, last(split(d.path, '/')))
 WITH d
 MATCH (c:Chunk)-[:FROM_DOCUMENT]->(d)
@@ -294,9 +294,9 @@ RETURN sum(n) AS chunks
 # directement, mais aucun nœud Document n'est alors créé. On le crée nous-mêmes
 # et on y rattache les chunks laissés orphelins par ce passage.
 RATTACHER = """
-MATCH (c:Chunk) WHERE NOT (c)-[:FROM_DOCUMENT]->(:Document)
+MATCH (c:Chunk) WHERE NOT (c)-[:FROM_DOCUMENT]->(:SourceDocument)
 WITH collect(c) AS orphelins
-MERGE (d:Document {filename: $filename})
+MERGE (d:SourceDocument {filename: $filename})
 SET d.path = $path
 WITH d, orphelins UNWIND orphelins AS c
 MERGE (c)-[:FROM_DOCUMENT]->(d)
@@ -319,7 +319,14 @@ def construire_pipeline(driver: neo4j.Driver, depuis_pdf: bool = True) -> Simple
         ),
         # L'index vectoriel `GrahRAG` porte sur Chunk.textEmbedding ; le défaut de
         # la librairie est `embedding`, l'index resterait vide.
-        lexical_graph_config=LexicalGraphConfig(chunk_embedding_property="textEmbedding"),
+        # `Document` est un type que le LLM produit spontanément en extraction libre :
+        # ses entités écrasaient alors le label réservé aux fichiers, sans `__Entity__`,
+        # donc invisibles à la consolidation et sans provenance. Un label improbable
+        # supprime la collision par construction.
+        lexical_graph_config=LexicalGraphConfig(
+            chunk_embedding_property="textEmbedding",
+            document_node_label="SourceDocument",
+        ),
         # Le résolveur de la librairie ne compare que `name`, à étiquette égale.
         # Trop faible ici, puisque l'extraction libre produit aussi des étiquettes
         # divergentes : la consolidation est faite après, par consolider_entites().
@@ -358,7 +365,7 @@ def retirer(driver: neo4j.Driver, filename: str) -> dict:
     with driver.session(database=base()) as s:
         avant = s.run("MATCH (n) RETURN count(n) AS n").single()["n"]
         s.run(
-            "MATCH (d:Document {filename: $f}) "
+            "MATCH (d:SourceDocument {filename: $f}) "
             "OPTIONAL MATCH (c:Chunk)-[:FROM_DOCUMENT]->(d) "
             "DETACH DELETE d, c",
             f=filename,
