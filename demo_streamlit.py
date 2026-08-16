@@ -132,9 +132,9 @@ PAGE = st.sidebar.radio(
     "Étapes",
     [
         "0 · La pipeline",
-        "1 · Documents",
-        "2 · Schéma d'extraction",
-        "3 · Construction",
+        "1 · Documents & construction",
+        "2 · Schéma (détail)",
+        "3 · Construction (pas à pas)",
         "4 · Graphe",
         "5 · Entités extraites",
         "6 · Interroger",
@@ -203,12 +203,63 @@ elif PAGE.startswith("1"):
         type=[f.lstrip(".") for f in kg.FORMATS],
         accept_multiple_files=True,
     )
-    if envois and st.button("Enregistrer", type="primary"):
-        kg.DOSSIER.mkdir(exist_ok=True)
-        for f in envois:
-            (kg.DOSSIER / f.name).write_bytes(f.getvalue())
-        st.success(f"{len(envois)} fichier(s) enregistré(s).")
-        rafraichir()
+
+    if envois:
+        c1, c2 = st.columns([3, 2])
+        if c1.button("📥 Déposer et construire le graphe", type="primary"):
+            kg.DOSSIER.mkdir(exist_ok=True)
+            cibles = []
+            for f in envois:
+                chemin = kg.DOSSIER / f.name
+                chemin.write_bytes(f.getvalue())
+                cibles.append(chemin)
+
+            etapes = st.status("Construction du graphe", expanded=True)
+            journal = etapes.empty()
+            try:
+                etapes.write("**Passes 1 et 2** — dérivation du schéma")
+                chunks = kg.decouper(cibles)
+                bruts, rel = asyncio.run(
+                    kg.decouvrir_types(chunks, n=20, trace=lambda m: journal.caption(m))
+                )
+                schema = asyncio.run(
+                    kg.consolider(bruts, rel, trace=lambda m: journal.caption(m))
+                )
+                st.session_state["schema"] = schema
+                st.session_state["bruts"] = bruts.most_common()
+                etapes.write(
+                    f"↳ {len(bruts)} types bruts → **{len(schema['node_types'])} canoniques** : "
+                    + ", ".join(f"`{t}`" for t in schema["node_types"])
+                )
+
+                etapes.write(f"**Passe 3** — extraction sur {len(chunks)} chunks")
+                n = asyncio.run(
+                    kg.ingerer(cibles, driver(), kg.dict_en_schema(schema),
+                               trace=lambda m: journal.caption(m))
+                )
+                etapes.update(label="Graphe construit", state="complete", expanded=False)
+            except Exception as exc:
+                etapes.update(label="Échec de la construction", state="error")
+                st.error(str(exc))
+                st.stop()
+
+            st.success(
+                f"{len(cibles)} document(s) · {n} chunks · "
+                f"{len(schema['node_types'])} types d'entités. "
+                "Voir l'étape 4 pour le graphe."
+            )
+            rafraichir()
+
+        if c2.button("Déposer seulement"):
+            kg.DOSSIER.mkdir(exist_ok=True)
+            for f in envois:
+                (kg.DOSSIER / f.name).write_bytes(f.getvalue())
+            st.success(f"{len(envois)} fichier(s) enregistré(s), sans construction.")
+            rafraichir()
+        st.caption(
+            "« Déposer et construire » enchaîne tout : dérivation du schéma puis "
+            "extraction. Comptez ~30 s pour le schéma et ~30 s par document."
+        )
 
     st.subheader("Corpus")
     fichiers = kg.documents()
