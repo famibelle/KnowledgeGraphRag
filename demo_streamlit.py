@@ -5,7 +5,7 @@ Prérequis : le graphe construit par `demo_build_kg.py`.
 
 Usage : .venv/bin/python -m streamlit run demo_streamlit.py
 """
-import ast
+import asyncio
 import os
 import re
 from pathlib import Path
@@ -16,13 +16,10 @@ import pypdf
 import streamlit as st
 import streamlit.components.v1 as components
 from dotenv import load_dotenv
-from neo4j_viz.neo4j import from_neo4j
-from neo4j_graphrag.embeddings import OpenAIEmbeddings
-from neo4j_graphrag.generation import GraphRAG
 from neo4j_graphrag.llm import OpenAILLM
-from neo4j_graphrag.retrievers import VectorCypherRetriever, VectorRetriever
+from neo4j_viz.neo4j import from_neo4j
 
-from demo_query import EXPANSION, INDEX
+import demo_build_kg as kg
 
 load_dotenv()
 PDF_DIR = Path("PDFs")
@@ -38,16 +35,6 @@ def driver() -> neo4j.Driver:
     return neo4j.GraphDatabase.driver(
         os.environ["NEO4J_URI"],
         auth=(os.environ["NEO4J_USERNAME"], os.environ["NEO4J_PASSWORD"]),
-    )
-
-
-@st.cache_resource
-def rags():
-    emb = OpenAIEmbeddings(model="text-embedding-3-small")
-    llm = OpenAILLM(model_name="gpt-4o-mini", model_params={"temperature": 0})
-    return (
-        GraphRAG(retriever=VectorRetriever(driver(), INDEX, emb), llm=llm),
-        GraphRAG(retriever=VectorCypherRetriever(driver(), INDEX, EXPANSION, emb), llm=llm),
     )
 
 
@@ -82,20 +69,6 @@ def graphe(cypher: str, hauteur: int = 560, **params) -> None:
             )
     components.html(vg.render(height=f"{hauteur}px").data, height=hauteur + 10)
     st.caption(f"{len(vg.nodes)} nœuds · {len(vg.relationships)} relations — molette pour zoomer, clic pour déplacer")
-
-
-def lisible(contenu: str) -> str:
-    """Extrait le texte du chunk. Les deux retrievers renvoient des reprs différentes :
-    un dict Python pour VectorRetriever, un Record Neo4j pour VectorCypherRetriever."""
-    contenu = str(contenu)
-    try:  # VectorRetriever : repr de dict
-        d = ast.literal_eval(contenu)
-        if isinstance(d, dict) and "text" in d:
-            return " ".join(str(d["text"]).split())
-    except (ValueError, SyntaxError):
-        pass
-    m = re.search(r'text=(["\'])(.*?)\1(?:\s|,|>)', contenu, re.S)  # Record Neo4j
-    return " ".join((m.group(2) if m else contenu).replace("\\n", " ").split())
 
 
 @st.cache_data(ttl=300)
@@ -140,9 +113,9 @@ PAGE = st.sidebar.radio(
         "1 · Corpus & filtre",
         "2 · Graphe construit",
         "3 · Entités extraites",
-        "4 · Vectoriel vs Graphe",
-        "5 · Le contraste",
-        "6 · Exploration Cypher",
+        "4 · Interroger le graphe",
+        "5 · Exploration Cypher",
+        "6 · Gérer le corpus",
     ],
 )
 
@@ -281,7 +254,8 @@ elif PAGE.startswith("2"):
 elif PAGE.startswith("3"):
     st.title("Ce que le LLM a extrait")
     st.markdown(
-        "58 entités, produites par `gpt-4o-mini` sous **schéma contraint** : les types et "
+        f"{q('MATCH (e:__Entity__) RETURN count(e) AS n')[0]['n']} entités, produites par "
+        "`gpt-4o-mini` sous **schéma contraint** : les types et "
         "leurs propriétés sont imposés, le modèle ne peut pas en inventer d'autres. "
         "Chaque entité garde le lien vers le chunk dont elle provient — la traçabilité "
         "est une propriété du graphe, pas une promesse."
@@ -334,95 +308,117 @@ elif PAGE.startswith("3"):
         "donnent 58 et 61 entités. Les valeurs métier, elles, restent stables."
     )
 
+
 # --------------------------------------------------------------------------- #
-# 4 · Comparaison
+# 4 · Interroger le graphe
 # --------------------------------------------------------------------------- #
 elif PAGE.startswith("4"):
-    st.title("Vectoriel seul vs enrichi par le graphe")
-
-    presets = {
-        "Plafond d'hébergement": "Quel est le plafond de remboursement pour l'hébergement "
-        "lors d'une mission à Paris ?",
-        "Circuit d'approbation": "Qui doit approuver une mission à New York dont le coût "
-        "prévisionnel est de 6 000 EUR ?",
-        "Séminaire groupé": "J'organise un séminaire pour 12 personnes avec 20 000 EUR de "
-        "déplacements groupés. Quelle procédure d'achat dois-je suivre ?",
-    }
-    p = st.selectbox("Question type", list(presets))
-    question = st.text_area("Question", presets[p], height=80)
-
-    if st.button("Interroger", type="primary"):
-        nu, gr = rags()
-        c1, c2 = st.columns(2)
-        for col, titre, rag in ((c1, "🔍 Vectoriel seul", nu), (c2, "🕸️ + Graphe", gr)):
-            with col:
-                st.subheader(titre)
-                with st.spinner("…"):
-                    res = rag.search(question, retriever_config={"top_k": 4},
-                                     return_context=True)
-                st.markdown(res.answer)
-                with st.expander(f"Contexte récupéré ({len(res.retriever_result.items)} chunks)"):
-                    for n, item in enumerate(res.retriever_result.items, 1):
-                        st.caption(f"**{n}.** {lisible(item.content)[:350]}…")
-
-    st.info(
-        "Sur ce type de question — une consultation ponctuelle — le vectoriel seul suffit. "
-        "Le graphe affine la réponse mais ne la corrige pas. Voir l'étape 4 pour le cas "
-        "où l'écart devient structurel."
+    st.title("Interroger le graphe")
+    st.markdown(
+        "Des questions métier traduites en une requête sur le graphe. Pas de recherche "
+        "vectorielle ici : la récupération est **déterministe et exhibable** — la requête "
+        "est affichée, le résultat s'en déduit, et un auditeur peut contester la requête."
     )
 
+    QUESTIONS = {
+        "Quels seuils impliquent la Direction Financière ?": (
+            """MATCH (r:Role)-[rel]-(s:Seuil)
+WHERE toLower(r.name) CONTAINS 'financi'
+RETURN DISTINCT s.name AS Seuil, s.montant AS Montant, s.unite AS Unité
+ORDER BY s.montant""",
+            "Question d'**agrégation** : elle demande de balayer le référentiel et de "
+            "filtrer sur un critère. Le résultat croise deux documents distincts.",
+        ),
+        "Quels plafonds s'appliquent selon la zone ?": (
+            """MATCH (s:Seuil)-[:S_APPLIQUE_A]->(z:Zone)
+WHERE s.montant IS NOT NULL
+RETURN s.name AS Seuil, s.montant AS Montant, s.unite AS Unité, z.name AS Zone
+ORDER BY Seuil""",
+            "Chaque valeur porte sa dimension. Dans le PDF, la ligne "
+            "`Luxembourg 25 EUR 40 EUR 65 EUR` est illisible hors de son en-tête.",
+        ),
+        "Qui approuve quoi, et à partir de quel montant ?": (
+            """MATCH (r:Role)-[:APPROUVE|DECLENCHE]-(s:Seuil)
+RETURN r.name AS Rôle, s.name AS Seuil, s.montant AS Montant, s.consequence AS Conséquence
+ORDER BY s.montant, Rôle""",
+            "La chaîne d'approbation, reconstituée depuis deux documents. "
+            "⚠️ Elle est juste à 4/5 — voir les limites en page 3.",
+        ),
+        "Quels documents se renvoient les uns aux autres ?": (
+            """MATCH (a:DocumentRef)-[:REFERENCE]->(b:DocumentRef)
+RETURN a.name AS Source, b.name AS Cible""",
+            "Le graphe de renvois croisés, extrait sans effort supplémentaire.",
+        ),
+        "Quels outils interviennent dans les procédures ?": (
+            """MATCH (r:Role)-[:UTILISE]->(o:Outil)
+RETURN o.name AS Outil, collect(DISTINCT r.name) AS Rôles""",
+            "Concur revient partout : c'est l'outil central du référentiel.",
+        ),
+    }
+
+    choix = st.selectbox("Question", list(QUESTIONS))
+    cypher, commentaire = QUESTIONS[choix]
+    st.caption(commentaire)
+
+    c1, c2 = st.columns([1, 1])
+    with c1:
+        st.markdown("**Requête**")
+        st.code(cypher, language="cypher")
+    with c2:
+        st.markdown("**Résultat**")
+        try:
+            rows = q(cypher)
+            st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True, height=300)
+            st.caption(f"{len(rows)} ligne(s)")
+        except Exception as exc:
+            rows = []
+            st.error(str(exc))
+
+    if rows and st.button("Formuler la réponse", type="primary"):
+        with st.spinner("…"):
+            llm = OpenAILLM(model_name="gpt-4o-mini", model_params={"temperature": 0})
+            reponse = llm.invoke(
+                f"Réponds en français, brièvement, à partir de ces seules données "
+                f"extraites d'un référentiel de procédures internes.\n\n"
+                f"Question : {choix}\n\nDonnées :\n{rows}"
+            ).content
+        st.success(reponse)
+        st.caption(
+            "La génération est ancrée sur le résultat de la requête, pas sur des chunks "
+            "récupérés par similarité : chaque chiffre cité est traçable à une ligne."
+        )
+
+    st.divider()
+    st.subheader("Visualiser ce résultat")
+    graphe_par_question = {
+        "Quels seuils impliquent la Direction Financière ?":
+            "MATCH p=(r:Role)-[]-(s:Seuil) WHERE toLower(r.name) CONTAINS 'financi' RETURN p",
+        "Quels plafonds s'appliquent selon la zone ?":
+            "MATCH p=(s:Seuil)-[:S_APPLIQUE_A]->(z:Zone) RETURN p LIMIT 40",
+        "Qui approuve quoi, et à partir de quel montant ?":
+            "MATCH p=(r:Role)-[:APPROUVE|DECLENCHE]-(s:Seuil) RETURN p LIMIT 60",
+        "Quels documents se renvoient les uns aux autres ?":
+            "MATCH p=(a:DocumentRef)-[:REFERENCE]->(b:DocumentRef) RETURN p",
+        "Quels outils interviennent dans les procédures ?":
+            "MATCH p=(r:Role)-[:UTILISE]->(o:Outil) RETURN p",
+    }
+    graphe(graphe_par_question[choix], 480)
+
 # --------------------------------------------------------------------------- #
-# 5 · Le contraste
+# 5 · Cypher libre
 # --------------------------------------------------------------------------- #
 elif PAGE.startswith("5"):
-    st.title("Là où l'écart devient structurel")
-    QUESTION = (
-        "Liste TOUS les seuils du référentiel qui déclenchent une intervention de la "
-        "Direction Financière, avec leur montant."
-    )
-    st.markdown(f"> **{QUESTION}**")
-    st.markdown(
-        "C'est une question d'**agrégation** : elle demande de balayer le référentiel et "
-        "de filtrer sur un critère. Un `top_k` ne peut structurellement pas le faire."
-    )
-
-    if st.button("Comparer", type="primary"):
-        c1, c2 = st.columns(2)
-        with c1:
-            st.subheader("🔍 RAG vectoriel")
-            nu, _ = rags()
-            with st.spinner("…"):
-                st.markdown(nu.search(QUESTION, retriever_config={"top_k": 4}).answer)
-            st.error(
-                "Le modèle récupère le tableau des seuils d'achat, lexicalement proche de "
-                "la question, et le recopie sans filtrer sur le critère demandé."
-            )
-        with c2:
-            st.subheader("🕸️ Requête sur le graphe")
-            cypher = (
-                "MATCH (r:Role)-[rel]-(x:Seuil)\n"
-                "WHERE toLower(r.name) CONTAINS 'financi'\n"
-                "RETURN DISTINCT x.name AS Seuil, x.montant AS Montant, x.unite AS Unité\n"
-                "ORDER BY x.montant"
-            )
-            st.code(cypher, language="cypher")
-            st.dataframe(pd.DataFrame(q(cypher)), width="stretch", hide_index=True)
-            st.success("Ensemble correct, réparti sur deux documents distincts.")
-
-# --------------------------------------------------------------------------- #
-# 6 · Cypher
-# --------------------------------------------------------------------------- #
-else:
     st.title("Exploration Cypher")
     exemples = {
         "Seuils et leur zone": "MATCH (s:Seuil)-[:S_APPLIQUE_A]->(z:Zone)\n"
         "RETURN s.name AS seuil, s.montant AS montant, z.name AS zone ORDER BY montant",
-        "Qui approuve quoi": "MATCH (r:Role)-[:APPROUVE]->(s:Seuil)\n"
-        "RETURN r.name AS role, s.name AS seuil, s.montant AS montant ORDER BY role",
+        "Entités par document": "MATCH (e:__Entity__)-[:FROM_CHUNK]->(:Chunk)-[:FROM_DOCUMENT]->(d:Document)\n"
+        "RETURN d.filename AS document, count(DISTINCT e) AS entites ORDER BY entites DESC",
         "Chunks par document": "MATCH (c:Chunk)-[:FROM_DOCUMENT]->(d:Document)\n"
         "RETURN d.filename AS document, count(c) AS chunks ORDER BY document",
-        "Renvois entre documents": "MATCH (a:DocumentRef)-[:REFERENCE]->(b:DocumentRef)\n"
-        "RETURN a.name AS source, b.name AS cible",
+        "Entités sans relation métier": "MATCH (e:__Entity__)\n"
+        "WHERE NOT (e)-[:APPROUVE|S_APPLIQUE_A|DECLENCHE|UTILISE|REFERENCE]-()\n"
+        "RETURN labels(e)[0] AS type, e.name AS nom ORDER BY type, nom",
     }
     choix = st.selectbox("Exemple", list(exemples))
     cypher = st.text_area("Requête", exemples[choix], height=110)
@@ -433,3 +429,119 @@ else:
             st.caption(f"{len(rows)} ligne(s)")
         except Exception as exc:
             st.error(str(exc))
+
+# --------------------------------------------------------------------------- #
+# 6 · Gérer le corpus
+# --------------------------------------------------------------------------- #
+else:
+    st.title("Gérer le corpus")
+    st.caption(
+        "Ajouter ou retirer un PDF déclenche l'extraction des entités et met à jour "
+        "le graphe. L'ajout est incrémental ; le retrait supprime le document, ses "
+        "chunks, et les entités qui n'ont plus aucune source."
+    )
+
+    def rafraichir() -> None:
+        st.cache_data.clear()
+        st.rerun()
+
+    # --- documents présents ------------------------------------------------- #
+    st.subheader("Documents dans le graphe")
+    docs = q(
+        """
+        MATCH (d:Document)
+        OPTIONAL MATCH (c:Chunk)-[:FROM_DOCUMENT]->(d)
+        OPTIONAL MATCH (e:__Entity__)-[:FROM_CHUNK]->(c)
+        RETURN d.filename AS Document, count(DISTINCT c) AS Chunks,
+               count(DISTINCT e) AS Entités
+        ORDER BY Document
+        """
+    )
+    if not docs:
+        st.info("Le graphe est vide. Utilisez la reconstruction complète ci-dessous.")
+    for d in docs:
+        c1, c2, c3, c4 = st.columns([6, 1, 1, 2])
+        c1.write(f"📄 {d['Document']}")
+        c2.metric("chunks", d["Chunks"], label_visibility="collapsed")
+        c3.metric("entités", d["Entités"], label_visibility="collapsed")
+        cle = f"del_{d['Document']}"
+        if c4.button("🗑️ Retirer", key=cle):
+            st.session_state[f"confirm_{cle}"] = True
+        if st.session_state.get(f"confirm_{cle}"):
+            st.warning(f"Retirer **{d['Document']}** du graphe ?")
+            a, b = st.columns(2)
+            if a.button("Confirmer", key=f"ok_{cle}", type="primary"):
+                with st.spinner("Suppression…"):
+                    res = kg.retirer(driver(), d["Document"])
+                st.session_state[f"confirm_{cle}"] = False
+                st.success(
+                    f"{res['supprimés']} nœuds supprimés, dont "
+                    f"{res['entités orphelines']} entité(s) devenue(s) orpheline(s)."
+                )
+                rafraichir()
+            if b.button("Annuler", key=f"no_{cle}"):
+                st.session_state[f"confirm_{cle}"] = False
+                st.rerun()
+
+    st.divider()
+
+    # --- ajout -------------------------------------------------------------- #
+    st.subheader("Ajouter des PDF")
+    envois = st.file_uploader("Fichiers PDF", type=["pdf"], accept_multiple_files=True)
+    if envois:
+        apercu = []
+        for f in envois:
+            chemin = PDF_DIR / f.name
+            apercu.append(
+                {
+                    "Fichier": f.name,
+                    "Taille": f"{len(f.getvalue()) / 1024:.0f} Ko",
+                    "Déjà présent": "⚠️ oui" if chemin.exists() else "non",
+                }
+            )
+        st.dataframe(pd.DataFrame(apercu), width="stretch", hide_index=True)
+
+        if st.button("Ingérer", type="primary"):
+            chemins = []
+            for f in envois:
+                chemin = PDF_DIR / f.name
+                chemin.write_bytes(f.getvalue())
+                chemins.append(chemin)
+            journal = st.empty()
+            with st.spinner("Extraction des entités… (~30 s par document)"):
+                n = asyncio.run(
+                    kg.ingerer(chemins, driver(), trace=lambda m: journal.caption(m))
+                )
+            st.success(f"{len(chemins)} document(s) ingéré(s) · {n} chunks au total.")
+            rafraichir()
+
+    st.divider()
+
+    # --- reconstruction ----------------------------------------------------- #
+    st.subheader("Reconstruire tout le graphe")
+    st.caption(
+        "Vide le graphe puis réingère les PDF du dossier `PDFs/` dont l'en-tête porte "
+        "`Statut : EN VIGUEUR` — le filtre décrit en page 1."
+    )
+    retenus = kg.corpus() if PDF_DIR.exists() else []
+    st.write(f"**{len(retenus)}** document(s) seraient retenus : "
+             + ", ".join(f"`{p.name}`" for p in retenus))
+
+    if st.button("Tout reconstruire"):
+        st.session_state["confirm_rebuild"] = True
+    if st.session_state.get("confirm_rebuild"):
+        st.warning("Le graphe actuel sera entièrement effacé.")
+        a, b = st.columns(2)
+        if a.button("Confirmer la reconstruction", type="primary"):
+            st.session_state["confirm_rebuild"] = False
+            journal = st.empty()
+            with st.spinner("Reconstruction…"):
+                efface = kg.vider(driver())
+                n = asyncio.run(
+                    kg.ingerer(retenus, driver(), trace=lambda m: journal.caption(m))
+                )
+            st.success(f"{efface} nœuds effacés · {len(retenus)} document(s) réingérés · {n} chunks.")
+            rafraichir()
+        if b.button("Annuler"):
+            st.session_state["confirm_rebuild"] = False
+            st.rerun()

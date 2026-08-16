@@ -111,17 +111,19 @@ RETURN sum(n) AS chunks
 """
 
 
-async def main() -> None:
-    print("Filtrage du corpus (hypothèse : seule la version en vigueur est ingérée)")
-    fichiers = corpus()
-    print(f"\n{len(fichiers)} document(s) retenu(s)\n")
-
-    driver = neo4j.GraphDatabase.driver(
+def connexion() -> neo4j.Driver:
+    return neo4j.GraphDatabase.driver(
         os.environ["NEO4J_URI"],
         auth=(os.environ["NEO4J_USERNAME"], os.environ["NEO4J_PASSWORD"]),
     )
 
-    pipeline = SimpleKGPipeline(
+
+def base() -> str:
+    return os.environ.get("NEO4J_DATABASE", "neo4j")
+
+
+def construire_pipeline(driver: neo4j.Driver) -> SimpleKGPipeline:
+    return SimpleKGPipeline(
         llm=OpenAILLM(
             model_name="gpt-4o-mini",
             model_params={"temperature": 0, "response_format": {"type": "json_object"}},
@@ -141,17 +143,65 @@ async def main() -> None:
         # le défaut de la librairie est `embedding` -> l'index resterait vide
         lexical_graph_config=LexicalGraphConfig(chunk_embedding_property="textEmbedding"),
         perform_entity_resolution=True,
-        neo4j_database=os.environ.get("NEO4J_DATABASE", "neo4j"),
+        neo4j_database=base(),
     )
 
+
+async def ingerer(fichiers: list[Path], driver: neo4j.Driver, trace=print) -> int:
+    """Ingère des PDF dans le graphe existant : chunks, embeddings, entités.
+
+    N'efface rien — l'ajout est incrémental. La projection de compatibilité est
+    rejouée à la fin ; elle est idempotente (SET + MERGE).
+    """
+    pipeline = construire_pipeline(driver)
     for pdf in fichiers:
-        print(f"ingestion : {pdf.name}")
+        trace(f"ingestion : {pdf.name}")
         await pipeline.run_async(file_path=str(pdf))
+    with driver.session(database=base()) as s:
+        return s.run(COMPAT).single()["chunks"] or 0
 
-    with driver.session(database=os.environ.get("NEO4J_DATABASE", "neo4j")) as s:
-        n = s.run(COMPAT).single()["chunks"]
-        print(f"\ncompatibilité API/Streamlit : {n} chunks projetés (filename + CONTAINS_CHUNK)")
 
+def retirer(driver: neo4j.Driver, filename: str) -> dict:
+    """Retire un document du graphe : le document, ses chunks, et les entités qui
+    n'ont plus aucun chunk source.
+
+    Une entité citée par plusieurs documents survit — la résolution d'entités les a
+    fusionnées, elle garde donc un lien vers les chunks des autres documents.
+    """
+    with driver.session(database=base()) as s:
+        avant = s.run("MATCH (n) RETURN count(n) AS n").single()["n"]
+        s.run(
+            "MATCH (d:Document {filename: $f}) "
+            "OPTIONAL MATCH (c:Chunk)-[:FROM_DOCUMENT]->(d) "
+            "DETACH DELETE d, c",
+            f=filename,
+        )
+        orphelines = s.run(
+            "MATCH (e:__Entity__) WHERE NOT (e)-[:FROM_CHUNK]->() "
+            "WITH e, count(*) AS _ DETACH DELETE e RETURN count(*) AS n"
+        ).single()["n"]
+        apres = s.run("MATCH (n) RETURN count(n) AS n").single()["n"]
+    return {"supprimés": avant - apres, "entités orphelines": orphelines}
+
+
+def vider(driver: neo4j.Driver) -> int:
+    """Vide entièrement le graphe. Utilisé avant une reconstruction complète."""
+    with driver.session(database=base()) as s:
+        n = s.run("MATCH (n) RETURN count(n) AS n").single()["n"]
+        s.run("MATCH (n) DETACH DELETE n")
+    return n
+
+
+async def main() -> None:
+    print("Filtrage du corpus (hypothèse : seule la version en vigueur est ingérée)")
+    fichiers = corpus()
+    print(f"\n{len(fichiers)} document(s) retenu(s)\n")
+
+    driver = connexion()
+    n = await ingerer(fichiers, driver)
+    print(f"\ncompatibilité API/Streamlit : {n} chunks projetés (filename + CONTAINS_CHUNK)")
+
+    with driver.session(database=base()) as s:
         print("\n--- graphe obtenu ---")
         for r in s.run("MATCH (n) RETURN labels(n)[0] AS label, count(*) AS n ORDER BY n DESC"):
             print(f"  {r['label']:16s} {r['n']}")

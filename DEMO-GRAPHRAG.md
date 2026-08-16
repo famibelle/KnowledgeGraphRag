@@ -52,7 +52,29 @@ FOR (c:Chunk) ON (c.textEmbedding)
 OPTIONS {indexConfig: {`vector.dimensions`: 1536, `vector.similarity_function`: 'cosine'}}
 ```
 
-### Exécution
+### Interface graphique
+
+```bash
+.venv/bin/python -m streamlit run demo_streamlit.py
+```
+
+Six étapes, sur http://localhost:8501 :
+
+| Étape | Contenu |
+|---|---|
+| 1 · Corpus & filtre | Les documents, leur statut, et pourquoi certains sont écartés |
+| 2 · Graphe construit | Volumétrie, schéma, désambiguïsation des plafonds, rendu interactif `neo4j-viz` |
+| 3 · Entités extraites | Les entités produites par le LLM, avec leur chunk source — ratés compris |
+| 4 · Interroger le graphe | Questions métier traduites en Cypher, requête affichée |
+| 5 · Exploration Cypher | Requête libre |
+| 6 · Gérer le corpus | Ajouter ou retirer un PDF, reconstruire le graphe |
+
+L'interface est **entièrement orientée graphe** : pas de recherche vectorielle, la
+récupération se fait par requête Cypher affichée à l'écran, donc contestable par un
+auditeur. La comparaison vectoriel/graphe reste disponible en ligne de commande dans
+`demo_query.py`, qui a servi à établir les mesures ci-dessous.
+
+### Exécution en ligne de commande
 
 ```bash
 # 1. Vider le graphe (chaque reconstruction repart de zéro, sinon les ingestions se superposent)
