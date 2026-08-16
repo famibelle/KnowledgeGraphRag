@@ -132,12 +132,9 @@ PAGE = st.sidebar.radio(
     "Étapes",
     [
         "0 · La pipeline",
-        "1 · Documents & construction",
-        "2 · Schéma (détail)",
-        "3 · Construction (pas à pas)",
-        "4 · Graphe",
-        "5 · Entités extraites",
-        "6 · Interroger",
+        "1 · Déposer & construire",
+        "2 · Le graphe",
+        "3 · Interroger",
     ],
 )
 
@@ -162,10 +159,9 @@ if PAGE.startswith("0"):
     c1, c2, c3 = st.columns(3)
     c1.markdown(
         "#### Pourquoi trois passes\n"
-        "En extraction libre, le modèle invente un type par entité ou presque. Mesuré "
-        "sur un corpus réel : **55 types distincts sur 12 chunks, dont 48 vus une seule "
-        "fois**. La passe 2 les fusionne en une dizaine de types canoniques — sans elle, "
-        "le graphe n'a aucune connectivité."
+        "En extraction libre, le modèle invente ses types au fil des chunks. Mesuré ici : "
+        "**41 à 47 types distincts pour 12 chunks**, y compris à l'intérieur d'un seul "
+        "document. La passe 2 les ramène à une dizaine."
     )
     c2.markdown(
         "#### La provenance\n"
@@ -182,14 +178,14 @@ if PAGE.startswith("0"):
 
     st.divider()
     st.caption(
-        "Les deux couches du graphe : la couche **lexicale** (Document → Chunk) porte le "
-        "texte et les embeddings ; la couche **métier** (entités typées et leurs "
-        "relations) porte le sens. C'est la seconde qui permet de répondre à des "
-        "questions d'agrégation, qu'une recherche par similarité ne sait pas poser."
+        "Deux couches : la couche **lexicale** (Document → Chunk) porte le texte et les "
+        "embeddings ; la couche **métier** (entités typées) porte le sens. C'est la "
+        "seconde qui répond aux questions d'agrégation, hors de portée d'une recherche "
+        "par similarité."
     )
 
 # --------------------------------------------------------------------------- #
-# 1 · Documents
+# 1 · Déposer et construire
 # --------------------------------------------------------------------------- #
 elif PAGE.startswith("1"):
     st.title("Documents")
@@ -291,200 +287,10 @@ elif PAGE.startswith("1"):
                     st.rerun()
 
 # --------------------------------------------------------------------------- #
-# 2 · Schéma
-# --------------------------------------------------------------------------- #
 elif PAGE.startswith("2"):
-    st.title("Schéma d'extraction, dérivé automatiquement")
-    st.markdown(
-        "Les documents n'étant pas connus a priori, le schéma est **dérivé du corpus "
-        "lui-même**, en deux passes. Aucune saisie n'est nécessaire ; l'édition reste "
-        "possible mais facultative."
-    )
-
-    fichiers = kg.documents()
-    if not fichiers:
-        st.warning("Déposez d'abord des documents (étape 1).")
-        st.stop()
-
-    c1, c2 = st.columns([2, 1])
-    n = c2.slider("Chunks échantillonnés", 10, 60, 20, step=5,
-                  help="Passe 1 : un appel LLM par chunk échantillonné.")
-    if c1.button("Dériver le schéma", type="primary"):
-        journal = st.empty()
-        with st.spinner("Passe 1 : extraction libre · Passe 2 : consolidation…"):
-            chunks = kg.decouper(fichiers)
-            bruts, rel_brutes = asyncio.run(
-                kg.decouvrir_types(chunks, n=n, trace=lambda m: journal.caption(m))
-            )
-            schema = asyncio.run(
-                kg.consolider(bruts, rel_brutes, trace=lambda m: journal.caption(m))
-            )
-        st.session_state["schema"] = schema
-        st.session_state["bruts"] = bruts.most_common()
-        st.rerun()
-
-    if st.session_state.get("bruts"):
-        bruts = st.session_state["bruts"]
-        uniques = sum(1 for _, v in bruts if v == 1)
-        a, b, c = st.columns(3)
-        a.metric("Types bruts découverts", len(bruts))
-        b.metric("Vus une seule fois", f"{uniques} / {len(bruts)}")
-        c.metric("Types canoniques retenus", len(st.session_state["schema"]["node_types"]))
-        with st.expander("Les types bruts, avant consolidation"):
-            st.caption(
-                "C'est ce que produit une extraction libre : un type par entité ou "
-                "presque, avec les collisions habituelles de casse et de synonymie. "
-                "Sans la passe de consolidation, le graphe n'aurait aucune connectivité."
-            )
-            st.dataframe(
-                pd.DataFrame(bruts, columns=["Type brut", "Occurrences"]),
-                width="stretch", hide_index=True, height=260,
-            )
-
-    if "schema" not in st.session_state:
-        st.info("Aucun schéma. Lancez la dérivation ci-dessus.")
-        st.session_state["schema"] = {
-            "node_types": {}, "relationship_types": [], "patterns": []
-        }
-
-    s = st.session_state["schema"]
-    st.caption(
-        "Édition facultative. Les libellés sont normalisés en code après consolidation : "
-        "sans accent, relations en majuscules, propriétés `name`/`nom` retirées — un "
-        "prompt ne suffit pas à le garantir."
-    )
-    texte = st.text_area(
-        "Schéma (JSON éditable)",
-        json.dumps(s, ensure_ascii=False, indent=2),
-        height=380,
-    )
-    if st.button("Valider le schéma"):
-        try:
-            nouveau = json.loads(texte)
-            assert "node_types" in nouveau and "relationship_types" in nouveau
-            st.session_state["schema"] = nouveau
-            st.success(
-                f"{len(nouveau['node_types'])} types d'entités, "
-                f"{len(nouveau['relationship_types'])} relations."
-            )
-        except Exception as exc:
-            st.error(f"JSON invalide : {exc}")
-
-    if s["node_types"]:
-        st.subheader("Aperçu")
-        st.dataframe(
-            pd.DataFrame(
-                [{"Type": k, "Propriétés": ", ".join(v) or "—"} for k, v in s["node_types"].items()]
-            ),
-            width="stretch",
-            hide_index=True,
-        )
-        st.caption(
-            "Une propriété `name` est ajoutée d'office à chaque type : le résolveur "
-            "d'entités de la librairie ne compare que celle-là."
-        )
-
-# --------------------------------------------------------------------------- #
-# 3 · Construction
-# --------------------------------------------------------------------------- #
-elif PAGE.startswith("3"):
-    st.title("Construction du graphe")
-
-    fichiers = kg.documents()
-    if not fichiers:
-        st.warning("Déposez d'abord des documents (étape 1).")
-        st.stop()
-    auto = not st.session_state.get("schema", {}).get("node_types")
-    if auto:
-        st.info(
-            "Aucun schéma défini : il sera **dérivé automatiquement** du corpus avant "
-            "l'extraction (passes 1 et 2). Vous pouvez aussi le régler à l'étape 2."
-        )
-
-    dans_graphe = {r["f"] for r in q("MATCH (d:Document) RETURN d.filename AS f")}
-    nouveaux = [f for f in fichiers if f.name not in dans_graphe]
-
-    st.markdown(
-        f"**{len(fichiers)}** document(s) dans le corpus, dont **{len(nouveaux)}** "
-        "pas encore ingéré(s)."
-    )
-    st.caption("Comptez ~30 s et une dizaine d'appels LLM par document.")
-
-    choix = st.multiselect(
-        "Documents à ingérer", [f.name for f in fichiers],
-        default=[f.name for f in nouveaux],
-    )
-    cibles = [f for f in fichiers if f.name in choix]
-
-    def schema_pret(journal) -> dict:
-        """Dérive le schéma si aucun n'est défini, puis le met en forme pipeline."""
-        if not st.session_state.get("schema", {}).get("node_types"):
-            chunks = kg.decouper(cibles)
-            bruts, rel = asyncio.run(
-                kg.decouvrir_types(chunks, n=20, trace=lambda m: journal.caption(m))
-            )
-            st.session_state["schema"] = asyncio.run(
-                kg.consolider(bruts, rel, trace=lambda m: journal.caption(m))
-            )
-            st.session_state["bruts"] = bruts.most_common()
-        return kg.dict_en_schema(st.session_state["schema"])
-
-    c1, c2 = st.columns(2)
-    if c1.button("Construire" if auto else "Ingérer (incrémental)",
-                 type="primary", disabled=not cibles):
-        journal = st.empty()
-        with st.spinner("Dérivation du schéma puis extraction des entités…"):
-            schema = schema_pret(journal)
-            n = asyncio.run(
-                kg.ingerer(cibles, driver(), schema, trace=lambda m: journal.caption(m))
-            )
-        st.success(
-            f"{len(cibles)} document(s) ingéré(s) · {n} chunks · "
-            f"{len(st.session_state['schema']['node_types'])} types d'entités."
-        )
-        rafraichir()
-
-    if c2.button("Tout reconstruire", disabled=not cibles):
-        st.session_state["confirm_rebuild"] = True
-    if st.session_state.get("confirm_rebuild"):
-        st.warning("Le graphe actuel sera entièrement effacé.")
-        a, b = st.columns(2)
-        if a.button("Confirmer", type="primary"):
-            st.session_state["confirm_rebuild"] = False
-            journal = st.empty()
-            with st.spinner("Reconstruction…"):
-                schema = schema_pret(journal)
-                efface = kg.vider(driver())
-                n = asyncio.run(
-                    kg.ingerer(cibles, driver(), schema, trace=lambda m: journal.caption(m))
-                )
-            st.success(f"{efface} nœuds effacés · {len(cibles)} document(s) · {n} chunks.")
-            rafraichir()
-        if b.button("Annuler"):
-            st.session_state["confirm_rebuild"] = False
-            st.rerun()
-
-    if etat.get("chunks"):
-        st.divider()
-        st.subheader("État")
-        v = q("MATCH (c:Chunk) RETURN count(c) AS total, count(c.textEmbedding) AS avec")[0]
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Documents", etat["docs"])
-        c2.metric("Chunks", v["total"])
-        c3.metric("Embeddings", v["avec"], delta=v["avec"] - v["total"] or None)
-        if v["avec"] < v["total"]:
-            st.error(
-                f"{v['total'] - v['avec']} chunk(s) sans embedding : ils comptent dans "
-                "les statistiques mais restent invisibles à la recherche vectorielle."
-            )
-
-# --------------------------------------------------------------------------- #
-# 4 · Graphe
-# --------------------------------------------------------------------------- #
-elif PAGE.startswith("4"):
-    st.title("Le graphe")
+    st.title("Le graphe obtenu")
     if not etat.get("entites"):
-        st.warning("Graphe vide — construisez-le d'abord (étape 3).")
+        st.warning("Graphe vide — construisez-le d'abord (étape 1).")
         st.stop()
 
     types = q(
@@ -523,15 +329,8 @@ elif PAGE.startswith("4"):
                 480, nom=nom,
             )
 
-# --------------------------------------------------------------------------- #
-# 5 · Entités extraites
-# --------------------------------------------------------------------------- #
-elif PAGE.startswith("5"):
-    st.title("Ce que le LLM a extrait")
-    if not etat.get("entites"):
-        st.warning("Graphe vide — construisez-le d'abord (étape 3).")
-        st.stop()
-
+    st.divider()
+    st.header("Ce que le LLM a extrait")
     st.markdown(
         f"**{etat['entites']}** entités, sous schéma contraint. Chacune garde le lien "
         "vers le chunk dont elle provient : la traçabilité est une propriété du graphe, "
@@ -577,12 +376,10 @@ elif PAGE.startswith("5"):
     )
 
 # --------------------------------------------------------------------------- #
-# 6 · Interroger
-# --------------------------------------------------------------------------- #
 else:
     st.title("Interroger le graphe")
     if not etat.get("entites"):
-        st.warning("Graphe vide — construisez-le d'abord (étape 3).")
+        st.warning("Graphe vide — construisez-le d'abord (étape 1).")
         st.stop()
 
     st.markdown(
