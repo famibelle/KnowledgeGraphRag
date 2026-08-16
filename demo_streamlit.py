@@ -134,22 +134,14 @@ if PAGE.startswith("0"):
     st.title("La pipeline, de bout en bout")
     st.markdown(
         "Des PDF vers un graphe de connaissances, **sans intervention humaine et sans "
-        "connaissance préalable des documents**. Les appels au LLM sont en orange, les "
-        "étapes déterministes en vert."
+        "connaissance préalable des documents**. En orange, les deux seules étapes qui "
+        "appellent le LLM."
     )
     st_mermaid(PIPELINE, height="260px")
 
-    c1, c2 = st.columns(2)
-    c1.markdown(
-        "#### Extraction libre, nettoyage après\n"
-        "Aucun schéma imposé : le modèle nomme et type ce qu'il trouve. Il produit alors "
-        "**41 à 47 types distincts pour 12 chunks**, même dans un seul document. La "
-        "consolidation les ramène à une dizaine."
-    )
-    c2.markdown(
-        "#### Chaque entité reste traçable\n"
-        "Un lien vers le chunk qui l'a produite, et de là vers son document. Toute "
-        "affirmation du graphe remonte à une phrase du texte."
+    st.caption(
+        "Chaque entité garde un lien vers le chunk qui l'a produite, et de là vers son "
+        "document : toute affirmation du graphe remonte à une phrase du texte."
     )
 
 # --------------------------------------------------------------------------- #
