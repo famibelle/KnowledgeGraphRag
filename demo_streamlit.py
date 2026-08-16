@@ -20,29 +20,19 @@ import demo_build_kg as kg
 # Le diagramme de la pipeline, affiché en préambule. Mermaid est embarqué dans le
 # paquet streamlit-mermaid : aucun appel réseau, il s'affiche hors connexion.
 PIPELINE = """
-flowchart TD
-    A["1 · Upload de PDF"] --> B["2 · Chunking<br/>1000 caracteres / 100 de recouvrement"]
-    B --> C["3 · Embeddings<br/>text-embedding-3-small"]
-    B --> D["4 · Extraction des entites<br/>un appel LLM par chunk, extraction LIBRE"]
-
-    D --> E1["5a · Fusion exacte<br/>nom normalise : minuscules, sans accent, sans article"]
-    E1 --> E2["5b · Harmonisation des types<br/>un appel LLM"]
-    E2 --> E3["5c · Fusion approchee<br/>similarite de noms, rapidfuzz"]
-
-    C --> G[("Chunk<br/>+ textEmbedding")]
-    E3 --> H[("Entites<br/>+ relations")]
-    A --> I[("Document")]
-    H -.->|FROM_CHUNK| G
-    G -.->|FROM_DOCUMENT| I
-
-    H --> J["6 · Affichage du graphe<br/>neo4j-viz"]
+flowchart LR
+    A["1 · Upload PDF"] --> B["2 · Chunking"]
+    B --> C["3 · Embeddings"]
+    B --> D["4 · Extraction des entites<br/>un appel LLM par chunk"]
+    D --> E["5 · Consolidation<br/>fusion des doublons"]
+    C --> F[("Graphe Neo4j")]
+    E --> F
+    F --> G["6 · Affichage du graphe"]
 
     classDef llm fill:#fff3e0,stroke:#e69138,color:#333
     classDef store fill:#e3f2fd,stroke:#4a86c8,color:#333
-    classDef code fill:#e8f5e9,stroke:#5a9c5a,color:#333
-    class D,E2 llm
-    class G,H,I store
-    class E1,E3 code
+    class D,E llm
+    class F store
 """
 
 st.set_page_config(page_title="GraphRAG Builder", page_icon="🕸️", layout="wide")
@@ -147,34 +137,19 @@ if PAGE.startswith("0"):
         "connaissance préalable des documents**. Les appels au LLM sont en orange, les "
         "étapes déterministes en vert."
     )
-    st_mermaid(PIPELINE, height="860px")
+    st_mermaid(PIPELINE, height="260px")
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2 = st.columns(2)
     c1.markdown(
         "#### Extraction libre, nettoyage après\n"
-        "Aucun schéma imposé : le modèle nomme et type ce qu'il trouve. Mesuré ici, il "
-        "produit **41 à 47 types distincts pour 12 chunks**, même à l'intérieur d'un seul "
-        "document. La consolidation les ramène ensuite à une dizaine."
+        "Aucun schéma imposé : le modèle nomme et type ce qu'il trouve. Il produit alors "
+        "**41 à 47 types distincts pour 12 chunks**, même dans un seul document. La "
+        "consolidation les ramène à une dizaine."
     )
     c2.markdown(
-        "#### La provenance\n"
-        "Chaque entité garde un lien `FROM_CHUNK` vers le passage qui l'a produite, et "
-        "chaque chunk un lien `FROM_DOCUMENT` vers son fichier. Toute affirmation du "
-        "graphe remonte à une phrase du texte."
-    )
-    c3.markdown(
-        "#### La récupération\n"
-        "La question devient du Cypher, **affiché à l'écran**. La réponse est formulée "
-        "à partir des seules lignes retournées. Un auditeur peut contester la requête, "
-        "pas seulement la réponse."
-    )
-
-    st.divider()
-    st.caption(
-        "Deux couches : la couche **lexicale** (Document → Chunk) porte le texte et les "
-        "embeddings ; la couche **métier** (entités typées) porte le sens. C'est la "
-        "seconde qui répond aux questions d'agrégation, hors de portée d'une recherche "
-        "par similarité."
+        "#### Chaque entité reste traçable\n"
+        "Un lien vers le chunk qui l'a produite, et de là vers son document. Toute "
+        "affirmation du graphe remonte à une phrase du texte."
     )
 
 # --------------------------------------------------------------------------- #
