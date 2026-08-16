@@ -72,6 +72,14 @@ def graphe(cypher: str, hauteur: int = 560, **params) -> None:
     # puis remplacer la légende par le nom métier.
     vg.color_nodes(field="caption")
     vg.set_node_captions(property="name")
+    # Les Chunk et Document n'ont pas de `name` : sans repli ils s'affichent nus.
+    for n in vg.nodes:
+        if not n.caption:
+            p = n.properties or {}
+            n.caption = (
+                str(p.get("filename", ""))[:28]
+                or f"chunk {p.get('chunk_index', '?')}"
+            )
     components.html(vg.render(height=f"{hauteur}px").data, height=hauteur + 10)
     st.caption(f"{len(vg.nodes)} nœuds · {len(vg.relationships)} relations — molette pour zoomer, clic pour déplacer")
 
@@ -131,9 +139,10 @@ PAGE = st.sidebar.radio(
     [
         "1 · Corpus & filtre",
         "2 · Graphe construit",
-        "3 · Vectoriel vs Graphe",
-        "4 · Le contraste",
-        "5 · Exploration Cypher",
+        "3 · Entités extraites",
+        "4 · Vectoriel vs Graphe",
+        "5 · Le contraste",
+        "6 · Exploration Cypher",
     ],
 )
 
@@ -267,9 +276,68 @@ elif PAGE.startswith("2"):
         )
 
 # --------------------------------------------------------------------------- #
-# 3 · Comparaison
+# 3 · Entités extraites
 # --------------------------------------------------------------------------- #
 elif PAGE.startswith("3"):
+    st.title("Ce que le LLM a extrait")
+    st.markdown(
+        "58 entités, produites par `gpt-4o-mini` sous **schéma contraint** : les types et "
+        "leurs propriétés sont imposés, le modèle ne peut pas en inventer d'autres. "
+        "Chaque entité garde le lien vers le chunk dont elle provient — la traçabilité "
+        "est une propriété du graphe, pas une promesse."
+    )
+
+    entites = q(
+        """
+        MATCH (e:__Entity__)
+        OPTIONAL MATCH (e)-[:FROM_CHUNK]->(c:Chunk)-[:FROM_DOCUMENT]->(doc:Document)
+        RETURN [l IN labels(e) WHERE NOT l STARTS WITH '__'][0] AS Type,
+               e.name AS Nom, e.montant AS Montant, e.unite AS Unité,
+               e.consequence AS Conséquence,
+               collect(DISTINCT doc.filename)[0] AS Source,
+               collect(DISTINCT substring(c.text, 0, 240))[0] AS Extrait
+        ORDER BY Type, Nom
+        """
+    )
+    df = pd.DataFrame(entites)
+
+    types = sorted(df["Type"].dropna().unique())
+    choix = st.multiselect("Filtrer par type", types, default=types)
+    vue = df[df["Type"].isin(choix)]
+
+    st.dataframe(
+        vue.drop(columns=["Extrait"]), width="stretch", hide_index=True, height=420
+    )
+    st.caption(f"{len(vue)} entité(s) sur {len(df)}")
+
+    st.subheader("Provenance")
+    if not vue.empty:
+        nom = st.selectbox("Entité", vue["Nom"].tolist())
+        ligne = vue[vue["Nom"] == nom].iloc[0]
+        c1, c2 = st.columns([1, 2])
+        c1.metric("Type", ligne["Type"])
+        if pd.notna(ligne["Montant"]):
+            c1.metric("Valeur", f"{ligne['Montant']:g} {ligne['Unité'] or ''}")
+        c2.caption(f"**Source :** {ligne['Source']}")
+        c2.info(ligne["Extrait"] or "—")
+
+    st.subheader("Ce qui ne marche pas")
+    st.markdown(
+        "Le tableau ci-dessus contient des erreurs réelles, gardées telles quelles :\n\n"
+        "- **`DocumentRef`** capte du bruit — `Directive`, `directive`, `version 1.2` ne "
+        "sont pas des documents, malgré l'instruction de schéma qui l'interdit.\n"
+        "- **La négation n'est pas gérée** : la directive dit que le seuil de 25 EUR *est "
+        "supprimé*, l'extracteur en fait un seuil de 25 EUR.\n"
+        "- **La chaîne d'approbation est juste à 4/5** : le palier 1 500–15 000 EUR se voit "
+        "attribuer le Comité de Direction au lieu du responsable budgétaire.\n\n"
+        "Et l'extraction n'est **pas déterministe** : à `temperature=0`, deux exécutions "
+        "donnent 58 et 61 entités. Les valeurs métier, elles, restent stables."
+    )
+
+# --------------------------------------------------------------------------- #
+# 4 · Comparaison
+# --------------------------------------------------------------------------- #
+elif PAGE.startswith("4"):
     st.title("Vectoriel seul vs enrichi par le graphe")
 
     presets = {
@@ -304,9 +372,9 @@ elif PAGE.startswith("3"):
     )
 
 # --------------------------------------------------------------------------- #
-# 4 · Le contraste
+# 5 · Le contraste
 # --------------------------------------------------------------------------- #
-elif PAGE.startswith("4"):
+elif PAGE.startswith("5"):
     st.title("Là où l'écart devient structurel")
     QUESTION = (
         "Liste TOUS les seuils du référentiel qui déclenchent une intervention de la "
@@ -342,7 +410,7 @@ elif PAGE.startswith("4"):
             st.success("Ensemble correct, réparti sur deux documents distincts.")
 
 # --------------------------------------------------------------------------- #
-# 5 · Cypher
+# 6 · Cypher
 # --------------------------------------------------------------------------- #
 else:
     st.title("Exploration Cypher")
