@@ -82,9 +82,15 @@ d.session().run('MATCH (n) DETACH DELETE n');d.close();print('graphe vidé')"
 
 | Élément | Volume |
 |---|---|
-| Documents / Chunks | 3 / 17 |
-| Entités typées | 61 (19 Seuil, 16 Role, 12 Zone, 7 DocumentRef, 6 Outil) |
-| Relations métier | 54 |
+| Documents / Chunks | 3 / 17 *(déterministe)* |
+| Entités typées | ~55–60 (Seuil, Role, Zone, DocumentRef, Outil) |
+| Relations métier | ~45–55 |
+
+> ℹ️ Le découpage et les embeddings sont déterministes, **l'extraction ne l'est pas** :
+> malgré `temperature=0`, deux exécutions donnent des volumétries différentes (58 vs 61
+> entités sur deux runs consécutifs). Les valeurs métier, elles, restent stables — les
+> 7 plafonds sont corrects à chaque run. Ne comptez pas sur des chiffres exacts pour
+> valider une exécution ; validez sur le contenu.
 
 Le type `Seuil` porte les valeurs (`montant`, `unite`, `consequence`) : c'est lui qui rend
 les chiffres interrogeables. Exemple de ce que le graphe désambiguïse — la ligne PDF
