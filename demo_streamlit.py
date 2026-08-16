@@ -137,7 +137,7 @@ if PAGE.startswith("0"):
         "connaissance préalable des documents**. En orange, les deux seules étapes qui "
         "appellent le LLM."
     )
-    st_mermaid(PIPELINE, height="260px")
+    st_mermaid(PIPELINE, height="560px")
 
     st.caption(
         "Chaque entité garde un lien vers le chunk qui l'a produite, et de là vers son "
