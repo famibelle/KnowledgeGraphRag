@@ -74,16 +74,36 @@ def extraire_texte(chemin: Path) -> str:
 # --------------------------------------------------------------------------- #
 # Schéma d'extraction
 # --------------------------------------------------------------------------- #
-async def proposer_schema(fichiers: list[Path], echantillon: int = 6000) -> GraphSchema:
+def echantillonner(texte: str, budget: int, fenetres: int = 3) -> str:
+    """Prélève plusieurs fenêtres réparties dans le document.
+
+    Prendre uniquement le début est trompeur : sur un texte long, les premiers
+    milliers de caractères sont la page de titre et le sommaire, jamais le fond.
+    """
+    if len(texte) <= budget:
+        return texte
+    taille = budget // fenetres
+    positions = [int(len(texte) * p) for p in (0.05, 0.45, 0.80)][:fenetres]
+    return "\n[…]\n".join(texte[p : p + taille] for p in positions)
+
+
+async def proposer_schema(fichiers: list[Path], echantillon: int = 12000) -> GraphSchema:
     """Fait proposer par le LLM les types d'entités et de relations du corpus.
 
     C'est le point de qualité de toute la pipeline : en extraction libre, le modèle
     produit des types incohérents d'un chunk à l'autre. Le schéma proposé ici est
     destiné à être relu et corrigé avant construction.
+
+    Le budget est réparti au prorata de la taille des documents, pour qu'un texte
+    long ne soit pas réduit au même extrait qu'une note de deux pages.
     """
-    extrait = "\n\n".join(extraire_texte(f)[: echantillon // max(len(fichiers), 1)]
-                          for f in fichiers)
-    return await SchemaFromTextExtractor(llm=llm()).run(text=extrait[:echantillon])
+    textes = {f: extraire_texte(f) for f in fichiers}
+    total = sum(len(t) for t in textes.values()) or 1
+    morceaux = []
+    for f, t in textes.items():
+        part = max(int(echantillon * len(t) / total), echantillon // (4 * len(fichiers)))
+        morceaux.append(f"--- {f.name} ---\n{echantillonner(t, part)}")
+    return await SchemaFromTextExtractor(llm=llm()).run(text="\n\n".join(morceaux)[:echantillon * 2])
 
 
 def schema_en_dict(schema: GraphSchema) -> dict:
