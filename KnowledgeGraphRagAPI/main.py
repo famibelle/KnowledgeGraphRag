@@ -260,11 +260,12 @@ async def query_chunks(request: QueryRequest):
     
     vector_search_query = f"""
     WITH genai.vector.encode(
-        $question, 
-        "OpenAI", 
+        $question,
+        "OpenAI",
         {{
           token: $openAiApiKey,
-          endpoint: $openAiEndpoint
+          endpoint: $openAiEndpoint,
+          model: "text-embedding-3-small"
         }}) AS question_embedding
     CALL db.index.vector.queryNodes('GrahRAG', $top_k, question_embedding)
     YIELD node, score
@@ -486,11 +487,12 @@ async def ingest_file(file: UploadFile = File(...)):
             MATCH (chunk:Chunk) 
             WHERE chunk.filename = $filename AND chunk.textEmbedding IS NULL
             WITH chunk, genai.vector.encode(
-                chunk.text, 
-                "OpenAI", 
+                chunk.text,
+                "OpenAI",
                 {
                   token: $openAiApiKey,
-                  endpoint: $openAiEndpoint
+                  endpoint: $openAiEndpoint,
+                  model: "text-embedding-3-small"
                 }) AS vector
             CALL db.create.setNodeVectorProperty(chunk, "textEmbedding", vector)
             RETURN count(chunk) as chunksProcessed
@@ -808,11 +810,12 @@ async def semantic_search_with_context(request: SemanticSearchRequest):
     # Recherche vectorielle
     vector_search_query = """
     WITH genai.vector.encode(
-        $question, 
-        "OpenAI", 
+        $question,
+        "OpenAI",
         {
           token: $openAiApiKey,
-          endpoint: $openAiEndpoint
+          endpoint: $openAiEndpoint,
+          model: "text-embedding-3-small"
         }) AS question_embedding
     CALL db.index.vector.queryNodes('GrahRAG', $top_k, question_embedding)
     YIELD node, score
