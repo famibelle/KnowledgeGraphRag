@@ -19,8 +19,14 @@ import demo_build_kg as kg
 
 # Le diagramme de la pipeline, affiché en préambule. Mermaid est embarqué dans le
 # paquet streamlit-mermaid : aucun appel réseau, il s'affiche hors connexion.
-PIPELINE = """
-flowchart TD
+# Le sens est réglable : vertical pour un écran de présentation, horizontal quand
+# le vidéoprojecteur est large et écrase la hauteur.
+SENS = {"Vertical": ("TD", 560), "Horizontal": ("LR", 360)}
+
+
+def pipeline(sens: str = "TD") -> str:
+    return f"""
+flowchart {sens}
     A["1 · Upload PDF"] --> B["2 · Chunking"]
     B --> C["3 · Embeddings"]
     B --> D["4 · Extraction des entites<br/>un appel LLM par chunk"]
@@ -91,8 +97,10 @@ def etat_graphe() -> dict:
             "OPTIONAL MATCH (c:Chunk) WITH docs, count(c) AS chunks "
             "OPTIONAL MATCH (e:__Entity__) RETURN docs, chunks, count(e) AS entites"
         )[0]
-    except Exception:
-        return {}
+    except Exception as exc:
+        # La cause exacte compte : `.env` incomplet, instance suspendue ou
+        # expiration réseau ne se corrigent pas de la même façon.
+        return {"erreur": f"{type(exc).__name__} : {str(exc)[:200]}"}
 
 
 # --------------------------------------------------------------------------- #
@@ -102,13 +110,19 @@ st.sidebar.title("🕸️ GraphRAG Builder")
 st.sidebar.caption("Des documents → un graphe de connaissances interrogeable")
 
 etat = etat_graphe()
-if etat:
+if etat and "erreur" not in etat:
     st.sidebar.success(
         f"Neo4j connecté\n\n{etat['docs']} documents · {etat['chunks']} chunks · "
         f"{etat['entites']} entités"
     )
 else:
     st.sidebar.error("Neo4j injoignable — vérifiez le `.env`")
+    st.sidebar.caption(etat.get("erreur", ""))
+    # Le pilote est mis en cache pour toute la session : si la connexion est morte,
+    # il faut le reconstruire, sans quoi seule une relance de l'application aide.
+    if st.sidebar.button("Reconnecter"):
+        st.cache_resource.clear()
+        rafraichir()
 
 PAGE = st.sidebar.radio(
     "Étapes",
@@ -137,7 +151,12 @@ if PAGE.startswith("0"):
         "connaissance préalable des documents**. En orange, les deux seules étapes qui "
         "appellent le LLM."
     )
-    st_mermaid(PIPELINE, height="560px")
+
+    choix = st.radio(
+        "Sens du schéma", list(SENS), horizontal=True, label_visibility="collapsed"
+    )
+    sens, hauteur = SENS[choix]
+    st_mermaid(pipeline(sens), height=f"{hauteur}px", key=f"pipeline_{sens}")
 
     st.caption(
         "Chaque entité garde un lien vers le chunk qui l'a produite, et de là vers son "
