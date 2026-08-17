@@ -9,6 +9,14 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-Latest-red.svg)](https://fastapi.tiangolo.com)
 [![Streamlit](https://img.shields.io/badge/Streamlit-Latest-orange.svg)](https://streamlit.io)
 
+> **⏱️ Pressé ? La démo tient en trois commandes** — voir
+> [🎬 Lancer la démo GraphRAG](#-lancer-la-démo-graphrag-ligne-de-commande) :
+> ```bash
+> .venv/bin/python -m streamlit run demo_streamlit.py --server.port 8502   # interface
+> .venv/bin/python demo_build_kg.py                                        # construction du graphe
+> .venv/bin/python demo_query.py                                           # vectoriel seul vs graphe
+> ```
+
 ## 🚀 Fonctionnalités Clés
 
 ### 🔍 **Recherche Sémantique Avancée**
@@ -34,6 +42,91 @@
 - **Réponses contextualisées** basées sur les documents
 - **Filtrage intelligent** pour éviter les hallucinations
 - **Recherche multi-documents** pour des requêtes complexes
+
+---
+
+## 🎬 Lancer la démo GraphRAG (ligne de commande)
+
+> Cette branche embarque une **démo autonome** : on dépose des documents, la pipeline en
+> extrait un graphe de connaissances, et le graphe se laisse interroger. Elle est bâtie sur
+> [`neo4j-graphrag`](https://neo4j.com/docs/neo4j-graphrag-python/) et s'exécute **sans
+> l'API ni l'interface Streamlit du projet** — trois commandes Python suffisent.
+
+### **Étape 0 — Environnement (une seule fois)**
+
+**Python 3.11+ est obligatoire** (`numpy` et `scipy` ne compilent pas en 3.10).
+
+```bash
+# Linux / macOS — uv télécharge CPython 3.11 au besoin
+uv venv --python 3.11 .venv
+
+# requirements.txt est un pip freeze Windows : pywin32 n'a pas de wheel ailleurs
+grep -viE '^pywin32==' requirements.txt > /tmp/requirements.linux.txt
+uv pip install --python .venv/bin/python -r /tmp/requirements.linux.txt
+```
+
+```powershell
+# Windows
+py -3.11 -m venv .venv
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+Renseignez `.env` à la racine (`NEO4J_URI`, `NEO4J_USERNAME`, `NEO4J_PASSWORD`,
+`NEO4J_DATABASE`, `OPENAI_API_KEY`), puis créez **une fois** l'index vectoriel dans Neo4j :
+
+```cypher
+CREATE VECTOR INDEX GrahRAG IF NOT EXISTS
+FOR (c:Chunk) ON (c.textEmbedding)
+OPTIONS {indexConfig: {`vector.dimensions`: 1536, `vector.similarity_function`: 'cosine'}}
+```
+
+### **Les 3 commandes de la démo**
+
+| # | Commande | Ce qu'elle fait |
+|---|----------|-----------------|
+| 1️⃣ | `.venv/bin/python -m streamlit run demo_streamlit.py` | **L'interface de démo** — pipeline illustrée, dépôt de documents, construction du graphe en un bouton, visualisation, interrogation |
+| 2️⃣ | `.venv/bin/python demo_build_kg.py` | **La pipeline en CLI** — ingère tout le dossier `PDFs/`, consolide les entités, imprime la volumétrie du graphe |
+| 3️⃣ | `.venv/bin/python demo_query.py` | **La démonstration de valeur** — 3 questions posées deux fois : RAG vectoriel seul, puis enrichi par le graphe |
+
+#### 1️⃣ Interface de démo (le chemin recommandé en présentation)
+
+```bash
+.venv/bin/python -m streamlit run demo_streamlit.py --server.port 8502
+```
+
+Ouvre `http://localhost:8502`. Le port 8502 évite la collision avec
+`streamlit_rag_simple.py` (l'interface du projet, qui occupe 8501). Quatre pages :
+*la pipeline* → *documents* → *le graphe obtenu* → *interroger le graphe*.
+Comptez **~30 s par document** pour la construction.
+
+#### 2️⃣ Construction du graphe en ligne de commande
+
+```bash
+# Traite TOUS les fichiers de PDFs/ (formats : .pdf, .txt, .md)
+.venv/bin/python demo_build_kg.py
+```
+
+Sortie : découpage → embeddings → extraction libre des entités (1 appel LLM par chunk) →
+consolidation, puis l'inventaire des labels, des relations et le décompte
+`chunks / embeddings`. Ce script est le module importé par l'interface : les deux chemins
+exécutent exactement le même code.
+
+#### 3️⃣ Interrogation comparée
+
+```bash
+.venv/bin/python demo_query.py
+```
+
+Pose les 3 questions du script (plafond d'hébergement, seuil d'approbation, procédure
+d'achat) à deux systèmes — `VectorRetriever` seul puis `VectorCypherRetriever` qui étend
+chaque chunk à ses entités et à leurs voisins — et imprime les deux réponses côte à côte.
+
+> **Sous Windows**, remplacez `.venv/bin/python` par `.venv\Scripts\python.exe` dans les
+> trois commandes.
+
+📖 Détail de la pipeline, mesures et limites assumées : **[DEMO-GRAPHRAG.md](./DEMO-GRAPHRAG.md)**
+
+---
 
 ## 🐳 Déploiement Docker (Recommandé)
 
@@ -229,16 +322,16 @@ RETURN documents, chunks, count(r) as total_relations;
 MATCH (d:Document)-[:CONTAINS_CHUNK]->(c:Chunk)
 RETURN d.filename, d.chunk_count, d.created_at, 
        count(c) as actual_chunks, 
-       collect(c.chunkIndex)[0..3] as first_chunks
+       collect(c.chunk_index)[0..3] as first_chunks
 ORDER BY d.created_at DESC;
 
 // 🕸️ Navigation séquentielle dans un document
 MATCH (d:Document {filename: 'your-document.pdf'})-[:CONTAINS_CHUNK]->(c:Chunk)
 OPTIONAL MATCH (c)-[:NEXT_CHUNK]->(next:Chunk)
 OPTIONAL MATCH (c)-[:PREVIOUS_CHUNK]->(prev:Chunk)
-RETURN c.chunkIndex, c.text[0..100] + '...' as preview,
-       prev.chunkIndex as previous, next.chunkIndex as next
-ORDER BY c.chunkIndex;
+RETURN c.chunk_index, c.text[0..100] + '...' as preview,
+       prev.chunk_index as previous, next.chunk_index as next
+ORDER BY c.chunk_index;
 
 // 🌐 Relations sémantiques inter-documents
 MATCH (c1:Chunk)-[r:RELATES_TO]->(c2:Chunk)
@@ -253,7 +346,7 @@ LIMIT 20;
 MATCH (c:Chunk)-[r:RELATES_TO]-()
 WITH c, count(r) as connections
 WHERE connections > 2
-RETURN c.filename, c.chunkIndex, connections,
+RETURN c.filename, c.chunk_index, connections,
        c.text[0..100] + '...' as preview
 ORDER BY connections DESC
 LIMIT 10;
@@ -265,14 +358,14 @@ MATCH path = shortestPath(
 RETURN path, length(path) as path_length;
 
 // 📋 Métadonnées complètes d'un chunk spécifique
-MATCH (c:Chunk {filename: 'your-doc.pdf', chunkIndex: 0})
+MATCH (c:Chunk {filename: 'your-doc.pdf', chunk_index: 0})
 OPTIONAL MATCH (c)-[r1:RELATES_TO]->(related:Chunk)
 OPTIONAL MATCH (c)-[r2:NEXT_CHUNK]->(next:Chunk)
 OPTIONAL MATCH (c)-[r3:PREVIOUS_CHUNK]->(prev:Chunk)
 RETURN c, 
        collect(DISTINCT related.filename) as related_docs,
-       next.chunkIndex as next_chunk,
-       prev.chunkIndex as prev_chunk;
+       next.chunk_index as next_chunk,
+       prev.chunk_index as prev_chunk;
 ```
 
 ### **🎯 Requêtes Cypher Avancées**
@@ -284,18 +377,18 @@ MATCH (c:Chunk)-[:RELATES_TO]-(other:Chunk)
 WHERE c.filename <> other.filename
 WITH c, collect(DISTINCT other.filename) as connected_docs
 WHERE size(connected_docs) > 2
-RETURN c.filename, c.chunkIndex, connected_docs,
+RETURN c.filename, c.chunk_index, connected_docs,
        c.text[0..100] + '...' as bridge_content
 ORDER BY size(connected_docs) DESC;
 
 // 🎯 Recherche par proximité sémantique (k-NN manuel)
-MATCH (target:Chunk {filename: 'your-doc.pdf', chunkIndex: 0})
+MATCH (target:Chunk {filename: 'your-doc.pdf', chunk_index: 0})
 MATCH (c:Chunk)
 WHERE c <> target
 WITH c, gds.similarity.cosine(target.textEmbedding, c.textEmbedding) as similarity
 ORDER BY similarity DESC
 LIMIT 10
-RETURN c.filename, c.chunkIndex, similarity,
+RETURN c.filename, c.chunk_index, similarity,
        c.text[0..120] + '...' as similar_content;
 ```
 
@@ -376,7 +469,7 @@ sequenceDiagram
 git clone https://github.com/famibelle/KnowledgeGraphRag.git
 cd KnowledgeGraphRag
 
-# Créer l'environnement virtuel
+# Créer l'environnement virtuel (Python 3.11+ impératif)
 python -m venv .venv
 .venv\Scripts\activate  # Windows
 # source .venv/bin/activate  # Linux/Mac
@@ -384,6 +477,11 @@ python -m venv .venv
 # Installer les dépendances
 pip install -r requirements.txt
 ```
+
+> ⚠️ **Linux / macOS** : `requirements.txt` est un `pip freeze` réalisé sous Windows et
+> épingle `pywin32==311`, qui n'a pas de wheel ailleurs et fait échouer tout l'install.
+> Filtrez-le : `grep -viE '^pywin32==' requirements.txt > /tmp/requirements.linux.txt`
+> puis installez ce fichier-là.
 
 ### **3. Configuration Environnement**
 ```bash
@@ -406,20 +504,34 @@ NEO4J_DATABASE=neo4j
 ```
 
 ### **4. Initialisation Neo4j**
-```bash
-# Démarrer l'API
-cd KnowledgeGraphRagAPI
-python -m uvicorn main:app --reload
 
-# Dans un autre terminal : Initialiser la base
-curl -X POST "http://localhost:8000/initialize_db"
+L'index vectoriel se crée **manuellement**, une seule fois, depuis le Neo4j Browser
+(il n'existe pas d'endpoint d'initialisation) :
+
+```cypher
+CREATE VECTOR INDEX GrahRAG IF NOT EXISTS
+FOR (c:Chunk) ON (c.textEmbedding)
+OPTIONS {indexConfig: {`vector.dimensions`: 1536, `vector.similarity_function`: 'cosine'}}
 ```
 
-### **5. Lancement Interface**
+Le nom `GrahRAG` (avec sa coquille) est celui codé en dur dans l'API : ne le corrigez pas.
+
+### **5. Lancement des deux processus**
+
 ```bash
-# Dans le répertoire racine
-streamlit run streamlit_rag_simple.py
+# API — À LANCER DEPUIS KnowledgeGraphRagAPI/ : main.py charge `../.env`,
+# chemin relatif au répertoire courant du processus.
+cd KnowledgeGraphRagAPI && ../.venv/bin/python -m uvicorn main:app --reload --port 8000
+
+# Interface (autre terminal, depuis la racine)
+.venv/bin/python -m streamlit run streamlit_rag_simple.py --server.port 8501
+
+# Ou les deux d'un coup (contrôles version/.env/dépendances, puis ouvre le navigateur)
+.venv/bin/python start.py
 ```
+
+API sur `http://localhost:8000/docs`, interface sur `http://localhost:8501`.
+`GET /health` dit immédiatement si la configuration Neo4j est bonne.
 
 ## 📖 Utilisation
 
@@ -486,13 +598,25 @@ CREATE (c1)-[:RELATES_TO {score: similarity}]->(c2)
 ```
 
 
-## 🧪 Tests et Validation
+## 🧪 Validation
 
-### **Tests de Robustesse**
+Il n'y a pas de suite de tests automatisés dans ce dépôt. Les vérifications se font
+à la main :
+
 ```bash
-python test_api_robustness.py  # Tests automatisés API
-python test_parallel_efficiency.py  # Performance parallèle
+# 1. La configuration est-elle vivante ?
+curl -s http://localhost:8000/health
+
+# 2. Le graphe contient-il ce qu'on croit ?
+.venv/bin/python demo_build_kg.py     # imprime labels, relations, chunks/embeddings
+
+# 3. Le graphe apporte-t-il quelque chose au vectoriel seul ?
+.venv/bin/python demo_query.py        # les deux réponses, côte à côte
 ```
+
+> ⚠️ L'extraction d'entités **n'est pas déterministe**, même à `temperature=0` : deux
+> exécutions sur le même corpus donnent des volumétries différentes. Ne validez jamais
+> une exécution sur un décompte d'entités.
 
 ### **Exemples de Requêtes**
 - **Mono-document** : "Quels sont les résultats financiers de LuxConnect?"
@@ -519,11 +643,13 @@ python test_parallel_efficiency.py  # Performance parallèle
 ├── KnowledgeGraphRagAPI/     # Backend FastAPI
 │   ├── main.py              # API principale
 │   └── requirements.txt     # Dépendances backend
-├── streamlit_rag_simple.py  # Interface Streamlit
-├── demo_build_kg.py         # Démo : construction du graphe (neo4j-graphrag)
-├── demo_query.py            # Démo : vectoriel seul vs enrichi par le graphe
-├── PDFs/                    # Corpus de démo (référentiel de procédures)
-├── requirements.txt         # Dépendances globales
+├── streamlit_rag_simple.py  # Interface Streamlit du projet (port 8501)
+├── demo_streamlit.py        # 🎬 Démo : interface de présentation (port 8502)
+├── demo_build_kg.py         # 🎬 Démo : construction du graphe (neo4j-graphrag)
+├── demo_query.py            # 🎬 Démo : vectoriel seul vs enrichi par le graphe
+├── PDFs/                    # Corpus de démo (dossier lu par demo_build_kg.py)
+├── start.py                 # Lance API + interface d'un coup
+├── requirements.txt         # Dépendances globales (pip freeze Windows)
 ├── .env.example            # Template configuration
 └── README.md               # Cette documentation
 ```
@@ -542,10 +668,16 @@ python test_parallel_efficiency.py  # Performance parallèle
 ## 🐛 Dépannage
 
 ### **Problèmes Courants**
-- **Neo4j connexion** : Vérifier `.env` et URL/credentials
-- **OpenAI API** : Valider la clé API et quotas
-- **Import errors** : `pip install -r requirements.txt`
-- **Performance lente** : Vérifier l'index vectoriel Neo4j
+- **Neo4j connexion** : vérifier `.env` et URL/credentials ; `GET /health` répond
+  `unhealthy` avec une erreur `NoneType` quand la base est injoignable au démarrage
+- **L'API ne voit pas le `.env`** : elle le charge via `../.env`, chemin **relatif au
+  répertoire courant** — lancez uvicorn depuis `KnowledgeGraphRagAPI/`
+- **OpenAI API** : valider la clé et les quotas
+- **`pip install` échoue sur `pywin32`** (Linux/macOS) : filtrer la ligne, cf. §Installation
+- **Recherche qui ne renvoie rien** : l'index vectoriel `GrahRAG` n'existe pas, ou les
+  embeddings ne sont pas dans `Chunk.textEmbedding`
+- **Démo : `Text2CypherRetriever` en erreur** : le LLM a produit du Cypher refusé par
+  Neo4j ; l'interface le signale et propose d'écrire la requête à la main
 
 
 ---
