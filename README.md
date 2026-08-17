@@ -31,6 +31,9 @@ cd KnowledgeGraphRagAPI && ../.venv/bin/python -m uvicorn main:app --reload --po
 ```
 
 > **Windows** : remplacez `.venv/bin/python` par `.venv\Scripts\python.exe` partout.
+>
+> **Docker n'est pas nécessaire** : ces commandes s'exécutent en local, contre une base
+> Neo4j distante. Le conteneur ne sert qu'au déploiement de la plateforme.
 
 Le détail de chaque commande est en [§ Lancer la démo](#-lancer-la-démo) et
 [§ Lancer la plateforme](#-lancer-la-plateforme). D'abord, l'installation.
@@ -441,7 +444,12 @@ RETURN e.name, labels(e);
 
 ---
 
-## 🐳 Docker
+## 🐳 Docker (facultatif)
+
+> **Docker n'est requis pour rien de ce qui précède.** Il ne sert qu'à *empaqueter* la
+> plateforme pour la déployer ailleurs. La base de données, elle, est distante — une
+> instance Neo4j Aura sous `neo4j+s://` — donc il n'y a rien à conteneuriser en local :
+> l'installation de la § Installation et les commandes Python suffisent.
 
 L'image lance **les deux processus** de la plateforme dans un seul conteneur
 (`docker-start.sh` : uvicorn en arrière-plan, puis streamlit). Les scripts de démo ne sont
