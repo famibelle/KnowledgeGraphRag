@@ -490,6 +490,244 @@ L'intégration continue construit amd64 + arm64 et publie sur `ghcr.io`.
 
 ---
 
+## ☸️ DevOps & déploiement orchestré
+
+> Les manifestes vivent dans **[`k8s/`](./k8s/)** — namespace, ConfigMap, Deployment,
+> Service, Ingress, Route OpenShift et NetworkPolicy optionnelle, assemblés par
+> `kustomization.yaml`. Trois valeurs sont à renseigner avant d'appliquer : `NEO4J_URI`,
+> l'hôte public, et la version d'image. Il n'y a **pas** de chart Helm.
+
+### **1. Ce que l'application impose à la plateforme**
+
+À lire **avant** d'écrire le moindre YAML : quatre contraintes structurelles décident de la
+topologie de déploiement, et aucune ne se contourne par configuration.
+
+| Contrainte | Conséquence pour le déploiement |
+|---|---|
+| **Un conteneur, deux processus** (`docker-start.sh` : uvicorn puis streamlit) | Un seul `Deployment`, deux ports. On ne peut **pas** scinder en deux workloads : `API_BASE_URL` est codé en dur à `http://localhost:8000` dans `streamlit_rag_simple.py:16`. Les scinder exige de modifier le code |
+| **Aucun état local** | Pas de `PersistentVolumeClaim`. Neo4j est **externe** (Aura). Le montage `./logs` de `docker-compose.production.yml` est décoratif : rien n'y est écrit |
+| **Trois flux sortants** | Le pod doit joindre `neo4j+s://…:7687` et `api.openai.com:443`. Et l'instance **Neo4j** doit elle aussi joindre `api.openai.com` (c'est elle qui calcule les embeddings). Une `NetworkPolicy` en `default-deny` egress casse tout silencieusement |
+| **Session Streamlit à état, sur websocket** | `replicas: 1`, ou affinité de session obligatoire. Sans elle, la montée en charge coupe les sessions au hasard |
+
+**Le piège des sondes.** `GET /health` renvoie **toujours HTTP 200**, y compris quand Neo4j
+est injoignable — l'état est dans le corps JSON (`"status": "unhealthy"`, cf.
+`KnowledgeGraphRagAPI/main.py:1053`). Une `readinessProbe` en `httpGet` sur `/health` est
+donc **inopérante** : elle ne échouera jamais. Même défaut dans le `HEALTHCHECK` du
+Dockerfile, qui utilise `curl -f`. Pour une readiness qui a du sens, il faut lire le corps :
+
+```yaml
+readinessProbe:
+  exec:
+    command: ["sh", "-c", "curl -sf http://localhost:8000/health | grep -q '\"status\":\"healthy\"'"]
+  initialDelaySeconds: 30
+  periodSeconds: 15
+livenessProbe:                    # le processus répond-il ? /  suffit et ne touche pas la base
+  httpGet: { path: /, port: 8000 }
+  initialDelaySeconds: 60
+  periodSeconds: 30
+```
+
+Le démarrage est également strict : `docker-start.sh` sort en erreur si `OPENAI_API_KEY` ou
+`NEO4J_URI` manquent, puis abandonne après 60 s d'attente de l'API. Un secret mal monté se
+lit donc en `CrashLoopBackOff`, pas en erreur applicative — `kubectl logs` donne la ligne
+exacte.
+
+### **2. La chaîne d'intégration continue existante**
+
+`.github/workflows/docker-publish.yml`, déclenché sur `master`/`main`, les tags `v*.*.*`,
+les pull requests et manuellement :
+
+| Étape | Détail |
+|---|---|
+| **Build multi-architecture** | `linux/amd64` + `linux/arm64` via Buildx, cache GitHub Actions |
+| **Publication** | `ghcr.io/famibelle/knowledgegraphrag`, tags `latest`, `{version}`, `{major}.{minor}`, `{branch}-{sha}` |
+| **Analyse de vulnérabilités** | Trivy, résultats poussés au format SARIF dans l'onglet Security |
+| **Pull requests** | Build seul, **sans push** |
+
+> ⚠️ **Les étapes Docker Hub sont commentées** dans le workflow. L'image
+> `famibelle/graphrag-knowledge-graph` référencée par `docker-compose.production.yml` n'est
+> donc **pas** alimentée par la CI. En production, tirez depuis `ghcr.io`. Pour réactiver
+> Docker Hub : configurer les secrets `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` et
+> décommenter les deux blocs.
+
+**Ce que la CI ne fait pas** : aucun test (il n'y en a pas), aucun lint, aucun déploiement.
+Le tag `latest` bouge à chaque commit sur `master` — en production, **épinglez un tag de
+version ou un digest**, jamais `latest`.
+
+### **3. Kubernetes**
+
+Le dossier **[`k8s/`](./k8s/)** contient tout, assemblé par Kustomize :
+
+| Fichier | Rôle | Dans `kustomization.yaml` |
+|---|---|---|
+| `namespace.yaml` · `configmap.yaml` | Le namespace, et `NEO4J_URI` / `NEO4J_USERNAME` / `NEO4J_DATABASE` | ✅ |
+| `deployment.yaml` | Le pod, ses sondes, ses limites, `HOME=/tmp`, l'`emptyDir` de `/tmp` | ✅ |
+| `service.yaml` | 8501 publié, 8000 réservé au `port-forward` | ✅ |
+| `ingress.yaml` | Interface exposée, affinité de session, délais relevés | ✅ |
+| `secret.example.yaml` | Modèle : `OPENAI_API_KEY`, `NEO4J_PASSWORD` | ❌ à créer hors dépôt |
+| `networkpolicy.yaml` | Cloisonnement réseau | ❌ opt-in, à adapter au cluster |
+| `openshift/route.yaml` | Remplace l'`Ingress` sur OpenShift | ❌ |
+
+```bash
+# 1. Le secret, hors du dépôt — lui seul porte ce qui est sensible
+kubectl create namespace graphrag
+kubectl -n graphrag create secret generic graphrag-secrets \
+  --from-literal=OPENAI_API_KEY='sk-...' \
+  --from-literal=NEO4J_PASSWORD='...'
+
+# 2. Renseigner NEO4J_URI (configmap.yaml), l'hôte (ingress.yaml)
+#    et la version d'image (kustomization.yaml)
+
+# 3. Appliquer
+kubectl apply -k k8s/
+kubectl -n graphrag rollout status deploy/graphrag
+
+# Le vrai diagnostic — /health répond 200 même en panne, il faut lire le corps
+kubectl -n graphrag exec deploy/graphrag -- curl -s localhost:8000/health
+```
+
+Rappel : les autres clés de `.env.example` (`CHUNK_SIZE`, `DEFAULT_TOP_K`, `MAX_WORKERS`…)
+ne sont lues par aucun code — inutile de les injecter.
+
+> 🔒 **N'exposez que le port 8501.** L'Ingress ci-dessus ignore délibérément le 8000 :
+> `POST /cypher` exécute **du Cypher arbitraire, écritures comprises, sans authentification**
+> (cf. § Limites connues). Publier l'API, c'est publier la base. Le port 8000 reste dans le
+> `Service` pour le diagnostic via `kubectl port-forward`, et l'interface l'atteint de toute
+> façon par `localhost`, dans le conteneur.
+>
+> Si le registre est privé : `kubectl -n graphrag create secret docker-registry ghcr --docker-server=ghcr.io --docker-username=<user> --docker-password=<PAT>`, puis `imagePullSecrets: [{name: ghcr}]`.
+
+### **4. Red Hat OpenShift**
+
+Les manifestes de `k8s/` s'appliquent tels quels, à trois différences près — toutes issues
+de la SCC `restricted-v2`, qui **ignore le `USER graphrag` du Dockerfile** et lance le
+conteneur sous un **UID aléatoire** appartenant au groupe `root` (0).
+
+| Point | Traitement |
+|---|---|
+| **UID aléatoire** | Le code est en lecture universelle et `docker-start.sh` en `755` : l'image démarre sans modification. Mais `HOME=/home/graphrag` **n'existe pas** (`useradd` sans `-m`) et l'UID n'est pas dans `/etc/passwd` — d'où le `HOME=/tmp` du manifeste, **obligatoire** ici, sans quoi Streamlit échoue à écrire sa configuration |
+| **Pas de `Ingress` mais des `Route`** | Une `Route` ne cible **qu'un seul port**. Une route sur 8501, et c'est tout — ce qui est précisément ce qu'on veut |
+| **Affinité de session** | Native : les routes OpenShift posent un cookie d'équilibrage par défaut. Rien à annoter |
+
+```bash
+oc new-project graphrag
+
+oc create secret generic graphrag-secrets \
+  --from-literal=OPENAI_API_KEY='sk-...' --from-literal=NEO4J_PASSWORD='...'
+oc create configmap graphrag-config \
+  --from-literal=NEO4J_URI='neo4j+s://...' \
+  --from-literal=NEO4J_USERNAME='neo4j' --from-literal=NEO4J_DATABASE='neo4j'
+
+# Tout sauf l'Ingress, remplacé par la Route
+oc apply -f k8s/namespace.yaml -f k8s/configmap.yaml \
+         -f k8s/deployment.yaml -f k8s/service.yaml
+
+oc apply -f k8s/openshift/route.yaml     # TLS au routeur, redirection HTTP → HTTPS
+oc -n graphrag get route graphrag -o jsonpath='{.spec.host}{"\n"}'
+```
+
+Diagnostic propre à la plateforme :
+
+```bash
+oc get events --sort-by=.lastTimestamp     # un refus de SCC apparaît ici, pas dans les logs
+oc rsh deploy/graphrag id                  # confirme l'UID aléatoire et le groupe 0
+oc logs deploy/graphrag | head -20         # les vérifications de docker-start.sh
+```
+
+> Si votre cluster impose `runAsNonRoot: true` **avec** une image à `USER` non numérique,
+> le kubelet refuse de démarrer le conteneur (il ne peut pas prouver que `graphrag` n'est
+> pas root). Deux issues : ajouter `runAsUser: 1001` au `securityContext` du pod, ou
+> reconstruire l'image en remplaçant `USER graphrag` par son UID numérique dans le
+> `Dockerfile`.
+
+### **5. Azure**
+
+Trois cibles, par ordre d'effort croissant. Dans les trois cas, l'image vient de `ghcr.io`
+et Neo4j reste **hors d'Azure** (Aura) : c'est un déploiement d'application sans état.
+
+**a. Azure Container Apps — le meilleur rapport effort/résultat.** Serverless, TLS et nom
+de domaine fournis, mise à l'échelle gérée.
+
+```bash
+az containerapp env create -g graphrag-rg -n graphrag-env -l westeurope
+
+az containerapp create -g graphrag-rg -n graphrag \
+  --environment graphrag-env \
+  --image ghcr.io/famibelle/knowledgegraphrag:latest \
+  --target-port 8501 --ingress external \
+  --min-replicas 1 --max-replicas 1 \
+  --cpu 1 --memory 2Gi \
+  --secrets openai-key='sk-...' neo4j-password='...' \
+  --env-vars OPENAI_API_KEY=secretref:openai-key \
+             NEO4J_PASSWORD=secretref:neo4j-password \
+             NEO4J_URI='neo4j+s://...' NEO4J_USERNAME=neo4j NEO4J_DATABASE=neo4j \
+             HOME=/tmp
+```
+
+> `--min-replicas 1` est délibéré : la mise à l'échelle à zéro tuerait les sessions
+> Streamlit, et le démarrage à froid de l'image dépasse la minute. Si vous passez
+> `--max-replicas` au-delà de 1, activez l'affinité :
+> `az containerapp ingress sticky-sessions set -g graphrag-rg -n graphrag --affinity sticky`.
+> Le port 8000 n'est **pas** exposé — et ne doit pas l'être.
+
+**b. Azure Container Instances — la démonstration jetable.** Un conteneur, une IP publique,
+facturé à la seconde. Aucune montée en charge, aucun TLS.
+
+```bash
+az container create -g graphrag-rg -n graphrag \
+  --image ghcr.io/famibelle/knowledgegraphrag:latest \
+  --cpu 1 --memory 2 --ports 8501 --dns-name-label graphrag-demo \
+  --environment-variables NEO4J_URI='neo4j+s://...' NEO4J_USERNAME=neo4j \
+                          NEO4J_DATABASE=neo4j HOME=/tmp \
+  --secure-environment-variables OPENAI_API_KEY='sk-...' NEO4J_PASSWORD='...'
+```
+
+Accessible sur `http://graphrag-demo.westeurope.azurecontainer.io:8501`, **en clair** :
+réservez-le à une démonstration sur données non sensibles.
+
+**c. Azure Kubernetes Service — si le cluster existe déjà.** Le dossier `k8s/` s'applique
+sans modification ; seul l'ingress change.
+
+```bash
+az aks get-credentials -g graphrag-rg -n mon-cluster
+kubectl apply -k k8s/
+```
+
+Points de vigilance propres à AKS : l'add-on **Application Gateway Ingress Controller**
+exige `appgw.ingress.kubernetes.io/` en préfixe d'annotation à la place de
+`nginx.ingress.kubernetes.io/`, et les websockets de Streamlit demandent un
+`request-timeout` relevé. Pour les secrets, préférez **Azure Key Vault** au `Secret`
+Kubernetes, via le pilote CSI :
+
+```bash
+az aks enable-addons -g graphrag-rg -n mon-cluster --addons azure-keyvault-secrets-provider
+```
+
+**Registre.** `ghcr.io` convient parfaitement. Pour rapatrier l'image dans **Azure
+Container Registry** — obligatoire si le cluster est privé, sans egress vers GitHub :
+
+```bash
+az acr import -n monacr --source ghcr.io/famibelle/knowledgegraphrag:latest \
+  --image graphrag:1.0.0
+az aks update -g graphrag-rg -n mon-cluster --attach-acr monacr
+```
+
+### **6. Ce qu'il reste à faire avant une vraie production**
+
+Cette application est un **PoC** ; l'orchestrer ne la rend pas exploitable. Par ordre de
+gravité :
+
+| Manque | Pourquoi c'est bloquant |
+|---|---|
+| **Aucune authentification** | Ni l'interface ni l'API n'en ont. Toute exposition publique doit passer par une couche d'authentification en amont (OAuth2 Proxy, Azure AD / Entra ID sur Container Apps, `oauth-proxy` en side-car sur OpenShift) |
+| **`POST /cypher` sans restriction** | Écriture et suppression comprises. Le port 8000 ne doit jamais franchir le cluster, et une `NetworkPolicy` en `default-deny` ingress sur 8000 vaut mieux qu'une promesse |
+| **Aucun test dans la CI** | Rien ne barre la route à une régression. Une simple étape qui construit l'image et vérifie que `GET /` répond serait déjà un progrès |
+| **Pas de télémétrie** | Aucune instrumentation Prometheus/OpenTelemetry. Le seul signal est `kubectl logs` et le corps de `/health` |
+| **Secrets en variables d'environnement** | Lisibles par `kubectl describe pod` et dans toute image de diagnostic. Key Vault + CSI, ou l'équivalent, sur un déploiement sérieux |
+| **`latest` comme tag** | Mouvant à chaque commit sur `master` : un redémarrage de pod peut changer de version sans que personne ne l'ait décidé |
+
+---
+
 ## ⚠️ Limites connues
 
 Elles sont mesurées et assumées ; les ignorer conduit à mal lire les résultats.
@@ -551,6 +789,7 @@ l'apport du graphe sur le vectoriel seul.
 ├── start.py                     # 🚀 Lance les deux processus, avec préflight
 │
 ├── Dockerfile · docker-*.yml    # Conteneurisation (plateforme uniquement)
+├── k8s/                         # ☸️ Manifestes Kubernetes / OpenShift (Kustomize)
 ├── Makefile                     # run / logs / health / stop / clean
 ├── requirements.txt             # Dépendances communes (freeze Windows, 184 paquets)
 └── .env.example                 # Modèle de configuration
@@ -570,6 +809,7 @@ plus riche mais périmée, jamais lancée ; `useful_embedding_queries.cypher` ut
 | **[DEMO-GRAPHRAG.md](./DEMO-GRAPHRAG.md)** | 🎬 La démo en détail : pipeline, choix de conception, mesures, pièges de `neo4j-graphrag` |
 | [QUICK-START.md](./QUICK-START.md) | 🚀 Déploiement Docker en deux minutes |
 | [DOCKER.md](./DOCKER.md) | 🐳 Détails de la conteneurisation |
+| [k8s/README.md](./k8s/README.md) | ☸️ Les manifestes : contenu, application, points de vigilance |
 | [TROUBLESHOOTING.md](./TROUBLESHOOTING.md) | 🔧 Dépannage approfondi |
 | [WINDOWS.md](./WINDOWS.md) | 🪟 Spécificités Windows |
 

@@ -1,0 +1,28 @@
+# Les deux ports sont dans le Service, mais SEUL le 8501 est publié par l'Ingress.
+#
+# Le 8000 n'est là que pour le diagnostic depuis le cluster :
+#   kubectl -n graphrag port-forward svc/graphrag 8000:8000
+#   curl -s localhost:8000/health
+#
+# 🔒 POST /cypher exécute du Cypher arbitraire, écritures et suppressions comprises,
+# sans aucune authentification. Exposer le port 8000, c'est exposer la base Neo4j.
+apiVersion: v1
+kind: Service
+metadata:
+  name: graphrag
+  namespace: graphrag
+  labels:
+    app.kubernetes.io/name: graphrag
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: graphrag
+  ports:
+    - name: streamlit
+      port: 8501
+      targetPort: streamlit
+      protocol: TCP
+    - name: api
+      port: 8000
+      targetPort: api
+      protocol: TCP

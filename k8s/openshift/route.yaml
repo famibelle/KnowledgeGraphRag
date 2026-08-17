@@ -1,0 +1,32 @@
+# Équivalent OpenShift de l'Ingress : TLS terminé au routeur, HTTP redirigé vers HTTPS.
+#
+# Une Route ne cible QU'UN SEUL port — ce qui tombe bien : seul le 8501 doit être publié.
+# L'affinité de session est native (cookie d'équilibrage posé par le routeur), aucune
+# annotation n'est nécessaire.
+#
+#   oc apply -f k8s/openshift/route.yaml
+#   oc -n graphrag get route graphrag -o jsonpath='{.spec.host}{"\n"}'
+#
+# En laissant spec.host vide, OpenShift génère l'hôte à partir du nom et du domaine du
+# cluster : <route>-<namespace>.apps.<cluster>.<domaine>
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: graphrag
+  namespace: graphrag
+  labels:
+    app.kubernetes.io/name: graphrag
+  annotations:
+    # Ingestion longue et websocket Streamlit : le routeur coupe à 30 s par défaut.
+    haproxy.router.openshift.io/timeout: 1h
+spec:
+  # host: graphrag.apps.mon-cluster.exemple.com   # optionnel
+  to:
+    kind: Service
+    name: graphrag
+    weight: 100
+  port:
+    targetPort: streamlit
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

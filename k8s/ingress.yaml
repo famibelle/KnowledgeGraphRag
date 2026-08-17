@@ -1,0 +1,43 @@
+# Publication de l'interface Streamlit UNIQUEMENT (port 8501).
+#
+# ⚠️ Le port 8000 est délibérément absent : POST /cypher n'a aucune restriction.
+# ⚠️ L'application n'a AUCUNE authentification, ni sur l'interface ni sur l'API. Toute
+#    exposition publique doit passer par une couche en amont (OAuth2 Proxy, oauth-proxy
+#    en side-car sur OpenShift, Entra ID sur Azure Container Apps).
+#
+# Sous OpenShift, ce fichier est remplacé par openshift/route.yaml.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: graphrag
+  namespace: graphrag
+  labels:
+    app.kubernetes.io/name: graphrag
+  annotations:
+    # Affinité de session : indispensable dès replicas > 1, la session Streamlit étant
+    # à état et portée par un websocket.
+    nginx.ingress.kubernetes.io/affinity: "cookie"
+    nginx.ingress.kubernetes.io/session-cookie-name: "graphrag-affinity"
+    # Websocket maintenu + ingestion longue (~30 s/document, davantage sur un gros PDF).
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    # Dépôt de documents via l'interface.
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    # TLS via cert-manager — décommenter et adapter l'émetteur.
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: nginx
+  # tls:
+  #   - hosts: [graphrag.exemple.com]
+  #     secretName: graphrag-tls
+  rules:
+    - host: graphrag.exemple.com   # ← à remplacer
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: graphrag
+                port:
+                  number: 8501

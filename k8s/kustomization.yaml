@@ -1,0 +1,29 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: graphrag
+
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - deployment.yaml
+  - service.yaml
+  - ingress.yaml
+  # Hors du lot, délibérément :
+  #   secret.example.yaml  → le Secret se crée hors du dépôt (voir README.md)
+  #   networkpolicy.yaml   → opt-in, casse le trafic si mal adaptée au cluster
+  #   openshift/route.yaml → remplace ingress.yaml sur OpenShift
+
+# includeSelectors: false — les selectors du Deployment sont immuables ; les injecter
+# depuis ici rendrait toute évolution de ces labels impossible à appliquer.
+labels:
+  - includeSelectors: false
+    pairs:
+      app.kubernetes.io/part-of: graphrag
+      app.kubernetes.io/managed-by: kustomize
+
+images:
+  # Épinglez ici la version déployée. `latest` bouge à chaque commit sur master :
+  # un simple redémarrage de pod peut changer de version sans décision de personne.
+  - name: ghcr.io/famibelle/knowledgegraphrag
+    newTag: latest

@@ -1,0 +1,20 @@
+# Configuration non sensible de la plateforme GraphRAG.
+#
+# ⚠️ Seules ces variables — plus OPENAI_API_KEY et NEO4J_PASSWORD, dans le Secret —
+# sont réellement lues par le code. Les autres clés de .env.example (CHUNK_SIZE,
+# DEFAULT_TOP_K, MAX_WORKERS, LOG_LEVEL…) ne sont consommées nulle part : les
+# paramètres correspondants sont écrits en dur dans KnowledgeGraphRagAPI/main.py.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: graphrag-config
+  namespace: graphrag
+  labels:
+    app.kubernetes.io/name: graphrag
+data:
+  # Instance Neo4j — EXTERNE au cluster (Neo4j Aura). Rien n'est déployé ici pour la base.
+  # Elle doit disposer des fonctions GenAI + GDS et d'un accès sortant vers api.openai.com :
+  # c'est Neo4j, et non le pod, qui calcule les embeddings via genai.vector.encode.
+  NEO4J_URI: "neo4j+s://votre-instance.databases.neo4j.io"
+  NEO4J_USERNAME: "neo4j"
+  NEO4J_DATABASE: "neo4j"
