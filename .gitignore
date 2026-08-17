@@ -9,6 +9,8 @@
 *.key
 *.pem
 credentials.json
+# Secret Kubernetes rempli localement — seul k8s/secret.example.yaml est suivi
+k8s/secret.yaml
 
 # ========================================
 # 🐍 Python

@@ -1,0 +1,57 @@
+# OPTIONNEL — volontairement hors de kustomization.yaml.
+#
+# Appliquez-le en connaissance de cause : une NetworkPolicy trop stricte casse GraphRAG
+# SILENCIEUSEMENT (l'appel Neo4j remonte en erreur Cypher, pas en erreur réseau).
+# Le pod a besoin de trois sorties : DNS, Neo4j Aura (7687/TCP) et api.openai.com (443).
+# Et rappelez-vous que l'instance Neo4j, elle, doit joindre api.openai.com de son côté —
+# ce qu'aucune politique du cluster ne peut assurer.
+#
+#   kubectl apply -f k8s/networkpolicy.yaml
+#   kubectl -n graphrag exec deploy/graphrag -- curl -s localhost:8000/health   # vérifier après
+---
+# 1. Entrée : rien, sauf le contrôleur d'ingress, et uniquement sur 8501.
+#    Le port 8000 devient injoignable depuis le cluster (POST /cypher sans restriction).
+#    ⚠️ Adaptez le sélecteur de namespace à votre contrôleur (ici : ingress-nginx).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: graphrag-ingress
+  namespace: graphrag
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: graphrag
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - port: 8501
+          protocol: TCP
+---
+# 2. Sortie : DNS, puis HTTPS (OpenAI) et Bolt sur TLS (Neo4j Aura).
+#    Les plages IP d'Aura et d'OpenAI n'étant pas stables, on ouvre par port et non par
+#    CIDR ; affiner suppose un proxy sortant ou un service mesh.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: graphrag-egress
+  namespace: graphrag
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: graphrag
+  policyTypes: [Egress]
+  egress:
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - ports:
+        - port: 443    # api.openai.com (génération des réponses)
+          protocol: TCP
+        - port: 7687   # neo4j+s:// (Bolt sur TLS)
+          protocol: TCP

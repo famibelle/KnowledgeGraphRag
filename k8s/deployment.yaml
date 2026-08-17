@@ -1,0 +1,128 @@
+# Un seul Deployment, deux processus dans le conteneur (docker-start.sh : uvicorn en
+# arrière-plan, puis streamlit).
+#
+# On ne peut PAS scinder l'API et l'interface en deux workloads : API_BASE_URL est codé
+# en dur à http://localhost:8000 dans streamlit_rag_simple.py:16. L'interface ne joint
+# l'API que par la boucle locale, à l'intérieur du conteneur.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: graphrag
+  namespace: graphrag
+  labels:
+    app.kubernetes.io/name: graphrag
+    app.kubernetes.io/component: platform
+spec:
+  # 1 seul réplica : la session Streamlit est à état et tient sur un websocket.
+  # Au-delà, l'affinité de session est OBLIGATOIRE (cf. ingress.yaml).
+  replicas: 1
+  strategy:
+    # L'application n'a pas d'état persistant, mais un RollingUpdate coupe les sessions
+    # Streamlit en cours. Recreate rend la coupure franche et brève plutôt que diffuse.
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: graphrag
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: graphrag
+        app.kubernetes.io/component: platform
+    spec:
+      # Décommenter si ghcr.io est privé :
+      #   kubectl -n graphrag create secret docker-registry ghcr \
+      #     --docker-server=ghcr.io --docker-username=<user> --docker-password=<PAT>
+      # imagePullSecrets:
+      #   - name: ghcr
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+        # runAsNonRoot: true est VOLONTAIREMENT absent : le Dockerfile déclare
+        # `USER graphrag` (non numérique), que le kubelet ne peut pas vérifier — le pod
+        # serait refusé. Si votre politique l'impose, ajoutez ici `runAsUser: 1001`,
+        # ou reconstruisez l'image avec un USER numérique.
+      containers:
+        - name: graphrag
+          # ⚠️ `latest` bouge à chaque commit sur master. En production, épinglez une
+          # version (ou un digest) — voir le champ images: de kustomization.yaml.
+          image: ghcr.io/famibelle/knowledgegraphrag:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: api
+              containerPort: 8000
+            - name: streamlit
+              containerPort: 8501
+          envFrom:
+            - configMapRef:
+                name: graphrag-config
+            - secretRef:
+                name: graphrag-secrets
+          env:
+            # Le Dockerfile crée l'utilisateur sans -m : /home/graphrag n'existe pas, et
+            # sous OpenShift l'UID est aléatoire et absent de /etc/passwd. Sans HOME
+            # inscriptible, Streamlit échoue à écrire sa configuration.
+            - name: HOME
+              value: /tmp
+            - name: STREAMLIT_BROWSER_GATHER_USAGE_STATS
+              value: "false"
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              # L'image embarque tout le pip freeze (184 paquets, jupyter compris) :
+              # l'empreinte au repos est déjà lourde.
+              memory: 2Gi
+          # ⚠️ GET /health renvoie TOUJOURS HTTP 200, même Neo4j injoignable — l'état est
+          # dans le corps JSON (main.py:1053). Une readinessProbe httpGet sur /health
+          # n'échouerait donc jamais : il faut lire la réponse.
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - curl -sf http://localhost:8000/health | grep -q '"status":"healthy"'
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 3
+          # Liveness : le processus répond-il ? GET / ne touche pas la base — une panne
+          # Neo4j passagère ne doit pas provoquer un redémarrage en boucle.
+          livenessProbe:
+            httpGet:
+              path: /
+              port: api
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # docker-start.sh sort en erreur si OPENAI_API_KEY ou NEO4J_URI manquent, puis
+          # abandonne après 60 s d'attente de l'API : un secret mal monté se lit en
+          # CrashLoopBackOff. La startupProbe laisse le temps du démarrage complet.
+          startupProbe:
+            httpGet:
+              path: /
+              port: api
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 30
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            # /app appartient à l'utilisateur de l'image et n'est pas écrit à l'exécution,
+            # mais le système de fichiers reste inscriptible : POST /ingest_file passe par
+            # tempfile (main.py:382) et Streamlit écrit dans HOME.
+            readOnlyRootFilesystem: false
+          volumeMounts:
+            # HOME + fichiers temporaires d'ingestion, bornés et hors du conteneur.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 1Gi
+      # Aucun PersistentVolumeClaim : l'application est sans état, Neo4j est externe.
+      # Le montage ./logs de docker-compose.production.yml est décoratif, rien n'y écrit.
+      terminationGracePeriodSeconds: 30

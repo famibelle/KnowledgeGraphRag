@@ -40,9 +40,20 @@ MODELE_EMBEDDING = "text-embedding-3-small"  # 1536 dims, comme l'index GrahRAG
 # Connexion
 # --------------------------------------------------------------------------- #
 def connexion() -> neo4j.Driver:
+    """Pilote borné dans le temps.
+
+    Sans ces bornes, une connexion du pool devenue morte — mise en veille de la
+    machine, bascule de réseau, instance Aura suspendue — bloque la requête
+    suivante pendant des minutes au lieu de lever une erreur. L'interface reste
+    alors figée sur la première requête venue, sans message.
+    """
     return neo4j.GraphDatabase.driver(
         os.environ["NEO4J_URI"],
         auth=(os.environ["NEO4J_USERNAME"], os.environ["NEO4J_PASSWORD"]),
+        connection_timeout=10,  # établissement de la connexion
+        connection_acquisition_timeout=15,  # attente d'une connexion du pool
+        max_transaction_retry_time=10,
+        liveness_check_timeout=0,  # teste toute connexion réutilisée du pool
     )
 
 
